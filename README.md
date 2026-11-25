@@ -4,6 +4,7 @@
 
 | 类别 | 代表文章 | 主要讲什么 |
 |---|---|---|
+| **全栈开发实践** | [CodeBuddy 三位一体 AI 全栈开发落地实践](https://mp.weixin.qq.com/s/v92Bl-W9hp65eb5TBfNlrA) | 用 CodeBuddy 做 AI 全栈开发的落地案例。 |
 | **跨仓开发与集成** | **[得物 · Harness + SDD + 多仓全栈开发](https://tech.dewu.com/article?id=221)**、[AliExpress · Hybrid Coding](https://qcon.infoq.cn/2026/shanghai/track/1966) | 一个需求横跨多个仓库或客户端时，怎样先对齐接口契约，再分配任务、并行实现和联调。 |
 | **任务接入与交付编排** | **[腾讯轻量云 · LoopForge](https://developer.cloud.tencent.com/article/2779233)**、[腾讯游戏 · 把 Loop 接进团队](https://qcon.infoq.cn/2026/shanghai/track/1964)、[飞猪 · AI Native 交付大脑](https://qcon.infoq.cn/2026/shanghai/presentation/7263) | LoopForge 从需求进入、派发 SOP 讲到验收和 MR。腾讯游戏讲 Spec 如何变成可并行、可重跑的任务图。飞猪讲产品、研发和测试如何围绕同一份 Spec 交接。 |
 | **项目上下文与研发资产** | [大淘宝 · AI 驱动研发体系的实践和思考](https://ai.aui2.cn/guide/frontier/posts/2026-09-02-ai-driven-rd-harness) | 多个业务仓库、团队知识、每轮迭代的 PRD 和验证结果怎样组织，让下一个人或 Agent 接手时能找到依据。 |
