@@ -16,16 +16,17 @@
 | 工作流设计 | [Matt Pocock · ask-matt](https://github.com/mattpocock/skills/blob/main/skills/engineering/ask-matt/SKILL.md) |
 | 软件工厂 | [LobeHub 一线复盘：实践 Super-Agent 半年后，我们对于 Agent 工程的思考](https://hub.baai.ac.cn/view/59827) |
 | 全栈开发实践 | [CodeBuddy 三位一体 AI 全栈开发落地实践](https://mp.weixin.qq.com/s/v92Bl-W9hp65eb5TBfNlrA) |
-| 任务接入与交付编排 | [腾讯轻量云 · LoopForge](https://developer.cloud.tencent.com/article/2779233) |
+| 成本与效能 | [Uber · Running a Software Factory Efficiently at Uber Scale](https://www.uber.com/us/en/blog/efficient-software-factory/) |
 | 验证、审查与上线 | [美团 · 31 万行代码 AI 重构](https://tech.meituan.com/2026/05/07/Agent-AI-Coding.html) |
 
 <details>
-<summary>其余 10 篇文章</summary>
+<summary>其余 11 篇文章</summary>
 
 | 主题 | 文章 |
 | --- | --- |
 | 跨仓开发与集成 | [得物 · Harness + SDD + 多仓全栈开发](https://tech.dewu.com/article?id=221) |
 | 跨仓开发与集成 | [AliExpress · Hybrid Coding](https://qcon.infoq.cn/2026/shanghai/track/1966) |
+| 任务接入与交付编排 | [腾讯轻量云 · LoopForge](https://developer.cloud.tencent.com/article/2779233) |
 | 任务接入与交付编排 | [腾讯游戏 · 把 Loop 接进团队](https://qcon.infoq.cn/2026/shanghai/track/1964) |
 | 任务接入与交付编排 | [飞猪 · AI Native 交付大脑](https://qcon.infoq.cn/2026/shanghai/presentation/7263) |
 | 项目上下文与研发资产 | [大淘宝 · AI 驱动研发体系的实践和思考](https://ai.aui2.cn/guide/frontier/posts/2026-09-02-ai-driven-rd-harness) |
