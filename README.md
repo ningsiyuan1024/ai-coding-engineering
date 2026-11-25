@@ -4,7 +4,7 @@
 
 | 工作流 | 任务入口 | 实践案例 |
 | --- | --- | --- |
-| [Sylan 的 Issue 工作流](workflows/sylan.md) | 用一张工单跟踪实现、审查和返工 | — |
+| [Sylan · Engineering Workflow](workflows/sylan.md) | 用一张工单跟踪实现、审查和返工 | — |
 | [Lauren Tan · pstack](workflows/pstack.md) | 将任务交给 `poteto-mode`，由它选择调查、修复或开发流程 | — |
 | [Matt Pocock · skills](workflows/matt.md) | 从一张任务单开始实现，也可以从一份已有的改动开始审查 | [Harbor #4219 · Claude Code 用量统计](cases/harbor-4219.md) |
 

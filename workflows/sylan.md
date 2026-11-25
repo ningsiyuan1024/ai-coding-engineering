@@ -1,4 +1,4 @@
-# Sylan 的 Issue 工作流
+# Sylan · Engineering Workflow
 
 我用 Symphony 按工单状态安排实现、审查和返工。
 
