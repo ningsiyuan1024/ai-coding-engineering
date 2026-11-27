@@ -1,4 +1,3 @@
-import json
 import hashlib
 import os
 from pathlib import Path
@@ -6,9 +5,8 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
-import uuid
 
-from factory.runtime import (ClaudeRuntime, CodexRuntime, NativeQuestion, ProviderCredential,
+from factory.runtime import (CodexRuntime, NativeQuestion, ProviderCredential,
                              RuntimeUnavailable, _environment, prepare_worktree)
 
 
@@ -81,79 +79,21 @@ class RuntimeTest(unittest.TestCase):
         self.assertTrue(rt._trusted(self.work / "AGENTS.md"))
         rt._rpc.assert_called_once_with("skills/config/write", {"path": project["path"], "enabled": False})
 
-    def claude(self):
-        plugin = self.root / "plugin"
-        manifest = plugin / ".claude-plugin" / "plugin.json"
-        manifest.parent.mkdir(parents=True)
-        manifest.write_text(json.dumps({"name": "upstream"}))
-        with patch("factory.runtime._cli", return_value=["claude"]):
-            r = ClaudeRuntime(self.home, self.work, plugin)
-        return r
-
-    def test_missing_profile_auth_never_runs_claude(self):
-        r = self.claude()
-        r.capabilities = lambda: {"authenticated": False}
-        with patch("factory.runtime._Stream") as stream, self.assertRaises(RuntimeUnavailable):
-            r.run("test", "sonnet", "high")
-        stream.assert_not_called()
-
-    def test_loading_is_distinct_from_skill_tool_invocation(self):
-        r = self.claude()
-        r.capabilities = lambda: {"authenticated": True}
-        session = str(uuid.uuid4())
-        observe = MagicMock()
-        init = {"type": "system", "subtype": "init", "session_id": session,
-                "plugins": [{"path": str(r.plugin), "name": "upstream"}], "skills": ["upstream:test"]}
-        assistant = {"type": "assistant", "message": {"content": [{"type": "tool_use",
-                     "name": "Skill", "input": {"skill": "upstream:test", "args": "private input"}}]}}
-        request = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "call",
-                   "name": "Agent", "input": {"prompt": "private task"}}]}}
-        reply = {"type": "assistant", "parent_tool_use_id": "call", "message": {"content": []}}
-        tool_result = {"type": "user", "message": {"content": [{"type": "tool_result",
-                       "tool_use_id": "call", "is_error": False}]}}
-        result = {"type": "result", "subtype": "success", "uuid": "result-1", "result": "done",
-                  "total_cost_usd": 0.012}
-        with patch("factory.runtime._Stream") as stream:
-            stream.return_value.next.side_effect = [init, assistant, request, reply, tool_result, result]
-            with patch("factory.runtime.uuid.uuid4", return_value=uuid.UUID(session)):
-                out = r.run("prompt", "sonnet", "high", on_event=observe)
-        self.assertEqual(out.thread_id, session)
-        self.assertEqual(out.text, "done")
-        observe.assert_any_call("runtime.plugin", {"plugin.name": "upstream", "skill.count": 1})
-        observe.assert_any_call("runtime.tool", {"tool.name": "Skill", "skill.name": "upstream:test"})
-        observe.assert_any_call("runtime.cost", {"cost.estimated_usd": 0.012})
-        observe.assert_any_call("runtime.subagent.request", {"tool.name": "Agent"})
-        observe.assert_any_call("runtime.subagent.activity", {"activity.kind": "assistant_reply"})
-        observe.assert_any_call("runtime.subagent.tool_result", {"tool.error": False})
-        self.assertNotIn("private input", str(observe.call_args_list))
-        self.assertNotIn("private task", str(observe.call_args_list))
-
-    def test_cross_profile_plugin_prevents_success(self):
-        r = self.claude()
-        r.capabilities = lambda: {"authenticated": True}
-        session = str(uuid.uuid4())
-        with patch("factory.runtime._Stream") as stream:
-            stream.return_value.next.return_value = {
-                "type": "system", "subtype": "init", "session_id": session,
-                "plugins": [{"name": "upstream", "path": str(self.root / "wrong")}],
-            }
-            with self.assertRaisesRegex(RuntimeUnavailable, "unexpected"):
-                r.run("prompt", "sonnet", "low", session)
 
     def test_only_opted_in_credential_can_reach_matching_provider(self):
         sample = {"ANTHROPIC_BASE_URL": "https://relay.invalid", "ANTHROPIC_API_KEY": "relay",
                   "GH_TOKEN": "write", "OSS_LINEAR_API_KEY": "tracker", "FACTORY_LINE_KEY": "official"}
         with patch.dict(os.environ, sample):
-            private = _environment(self.home, "CLAUDE_CONFIG_DIR")
+            private = _environment(self.home, "CODEX_HOME")
             self.assertTrue(set(sample).isdisjoint(private))
             self.assertEqual(private["GIT_CONFIG_VALUE_0"], "")
             wrong = ProviderCredential("FACTORY_LINE_KEY", "ANTHROPIC_API_KEY", "https://relay.invalid")
             with self.assertRaises(ValueError):
-                _environment(self.home, "CLAUDE_CONFIG_DIR", wrong)
-            auth = ProviderCredential("FACTORY_LINE_KEY", "ANTHROPIC_API_KEY", "https://api.anthropic.com")
-            bound = _environment(self.home, "CLAUDE_CONFIG_DIR", auth)
-            self.assertEqual(bound["ANTHROPIC_API_KEY"], "official")
-            self.assertEqual(bound["ANTHROPIC_BASE_URL"], auth.base_url)
+                _environment(self.home, "CODEX_HOME", wrong)
+            auth = ProviderCredential("FACTORY_LINE_KEY", "OPENAI_API_KEY", "https://api.openai.com/v1")
+            bound = _environment(self.home, "CODEX_HOME", auth)
+            self.assertEqual(bound["OPENAI_API_KEY"], "official")
+            self.assertEqual(bound["OPENAI_BASE_URL"], auth.base_url)
             self.assertNotIn("FACTORY_LINE_KEY", bound)
 
     def test_codex_human_question_is_not_an_answer_or_approval(self):
@@ -170,21 +110,20 @@ class RuntimeTest(unittest.TestCase):
         self.assertIn("error", r.stream.send.call_args.args[0])
         self.assertEqual(r.active, ("thread", "turn"))
 
-    def test_claude_human_question_preserves_the_bound_session(self):
-        r = self.claude()
-        r.capabilities = lambda: {"authenticated": True}
-        session = str(uuid.uuid4())
-        bound = MagicMock()
-        init = {"type": "system", "subtype": "init", "session_id": session,
-                "plugins": [{"name": "upstream", "path": str(r.plugin)}]}
-        question = {"type": "assistant", "message": {"content": [{"type": "tool_use",
-                    "name": "AskUserQuestion", "input": {"questions": [{"question": "Which target?"}]}}]}}
-        with patch("factory.runtime._Stream") as stream:
-            stream.return_value.next.side_effect = [init, question]
-            with self.assertRaisesRegex(NativeQuestion, "Which target"):
-                r.run("test", "sonnet", "high", thread_id=session, on_thread=bound)
-            args = stream.call_args.args[0]
-            denials = json.loads(args[args.index("--settings") + 1])["permissions"]["deny"]
-            self.assertIn("Bash(git push:*)", denials)
-            self.assertIn("Bash(gh pr create:*)", denials)
-        bound.assert_called_once_with(session)
+    def test_skill_and_collaboration_evidence_uses_only_native_structured_events(self):
+        with patch("factory.runtime._cli", return_value=["codex"]):
+            rt = CodexRuntime(self.home, self.work)
+        skill = self.home / "skills" / "tdd" / "SKILL.md"
+        rt.skill_paths = {skill.resolve(): "mattpocock-skills:tdd"}
+        emit = MagicMock()
+        read = {"type":"commandExecution", "status":"completed", "exitCode":0,
+                "commandActions":[{"type":"read", "path":str(skill), "command":"private contents"}]}
+        rt.observe_tool(read, emit)
+        rt.observe_tool({**read, "exitCode":1}, emit)
+        rt.observe_tool({**read, "commandActions":[{"type":"read", "path":"other/SKILL.md"}]}, emit)
+        rt.observe_tool({"type":"collabAgentToolCall", "tool":"spawnAgent", "prompt":"private task",
+                         "receiverThreadIds":["child"]}, emit)
+        self.assertEqual([call.args for call in emit.call_args_list], [
+            ("runtime.skill_read", {"skill.name":"mattpocock-skills:tdd"}),
+            ("runtime.subagent", {"operation":"spawnAgent", "receiver.count":1}),
+        ])

@@ -1,0 +1,122 @@
+--- a/lib/symphony_elixir/orchestrator.ex
++++ b/lib/symphony_elixir/orchestrator.ex
+@@ -34,6 +34,7 @@
+       :tick_timer_ref,
+       :tick_token,
+       task_supervisor: SymphonyElixir.TaskSupervisor,
++      worker_module: SymphonyElixir.AgentRunner,
+       running: %{},
+       completed: MapSet.new(),
+       claimed: MapSet.new(),
+@@ -65,6 +66,7 @@
+           tick_timer_ref: nil,
+           tick_token: nil,
+           task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
++          worker_module: Keyword.get(opts, :worker_module, AgentRunner),
+           codex_totals: @empty_codex_totals,
+           codex_rate_limits: nil
+         }
+@@ -203,6 +205,22 @@
+   def handle_info(msg, state) do
+     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
+     {:noreply, state}
++  end
++
++  defp handle_agent_down({:shutdown, {:worker_deferred, disposition}}, state, issue_id, _running_entry, _session_id) do
++    Logger.info("Worker released its execution slot for issue_id=#{issue_id} disposition=#{disposition}")
++    release_issue_claim(state, issue_id)
++  end
++
++  defp handle_agent_down({:shutdown, {:worker_fault, reason}}, state, issue_id, running_entry, _session_id) do
++    Logger.error("Worker infrastructure fault for issue_id=#{issue_id} reason=#{reason}")
++    block_issue_from_entry(state, issue_id, running_entry, "worker infrastructure fault: #{reason}")
++  end
++
++  defp handle_agent_down(_reason, %State{worker_module: worker} = state, issue_id, running_entry, _session_id)
++       when worker != AgentRunner do
++    Logger.error("Worker exited without a disposition for issue_id=#{issue_id}")
++    block_issue_from_entry(state, issue_id, running_entry, "worker exited without a disposition")
+   end
+ 
+   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
+@@ -905,7 +923,7 @@
+   end
+ 
+   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+-    case refresh_issue_for_dispatch(issue) do
++    case refresh_issue_for_dispatch(issue, state) do
+       {:ok, %Issue{} = refreshed_issue} ->
+         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+ 
+@@ -917,7 +935,15 @@
+     end
+   end
+ 
+-  defp refresh_issue_for_dispatch(issue) do
++  defp refresh_issue_for_dispatch(issue, %State{worker_module: worker}) do
++    if worker == AgentRunner or worker.eligible?(issue) do
++      revalidate_tracker_issue(issue)
++    else
++      {:skip, :worker_idle}
++    end
++  end
++
++  defp revalidate_tracker_issue(issue) do
+     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issues_by_ids/1, terminal_state_set()) do
+       {:ok, %Issue{} = refreshed_issue} ->
+         {:ok, refreshed_issue}
+@@ -951,8 +977,19 @@
+   end
+ 
+   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
++    worker = state.worker_module
++
+     case Task.Supervisor.start_child(state.task_supervisor, fn ->
+-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
++           case worker.run(issue, recipient, attempt: attempt, worker_host: worker_host) do
++             {:defer, disposition} when disposition in [:waiting_human, :waiting_upstream, :idle, :failed] ->
++               exit({:shutdown, {:worker_deferred, disposition}})
++
++             {:worker_fault, reason} when is_atom(reason) ->
++               exit({:shutdown, {:worker_fault, reason}})
++
++             result ->
++               result
++           end
+          end) do
+       {:ok, pid} ->
+         ref = Process.monitor(pid)
+@@ -1182,11 +1219,11 @@
+     if retry_candidate_issue?(issue, terminal_state_set()) and
+          dispatch_slots_available?(issue, state) and
+          worker_slots_available?(state, metadata[:worker_host]) do
+-      case refresh_issue_for_dispatch(issue) do
++      case refresh_issue_for_dispatch(issue, state) do
+         {:ok, %Issue{} = refreshed_issue} ->
+           {:noreply, do_dispatch_issue(state, refreshed_issue, attempt, metadata[:worker_host])}
+ 
+-        {:skip, :missing} ->
++        {:skip, reason} when reason in [:missing, :worker_idle] ->
+           {:noreply, release_issue_claim(state, issue.id)}
+ 
+         {:skip, %Issue{} = refreshed_issue} ->
+--- a/lib/symphony_elixir/agent_runtime_supervisor.ex
++++ b/lib/symphony_elixir/agent_runtime_supervisor.ex
+@@ -18,13 +18,16 @@
+ 
+     orchestrator_name = Keyword.get(opts, :orchestrator_name, SymphonyElixir.Orchestrator)
+ 
++    orchestrator_opts =
++      Keyword.take(opts, [:worker_module]) ++ [name: orchestrator_name, task_supervisor: task_supervisor_name]
++
+     children = [
+       Supervisor.child_spec(
+         {Task.Supervisor, name: task_supervisor_name},
+         id: task_supervisor_name
+       ),
+       Supervisor.child_spec(
+-        {SymphonyElixir.Orchestrator, name: orchestrator_name, task_supervisor: task_supervisor_name},
++        {SymphonyElixir.Orchestrator, orchestrator_opts},
+         id: orchestrator_name
+       )
+     ]

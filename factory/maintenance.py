@@ -9,7 +9,7 @@ from pathlib import Path
 import sqlite3
 import time
 
-from . import github_events, native_skills
+from . import github_events, lauren_native, native_skills
 
 
 PR_INTERVAL = 5 * 60
@@ -30,6 +30,8 @@ def _poll(store):
 
 
 def _refresh(line, profile):
+    if line == "lauren":
+        return {"state":"ok", **lauren_native.sync(profile)}
     registry = profile / "native" / "versions.sqlite3"
     with closing(sqlite3.connect(registry.as_uri() + "?mode=ro", uri=True)) as db:
         if db.execute("SELECT 1 FROM versions LIMIT 1").fetchone() is None:
@@ -84,9 +86,16 @@ def maintain(store, root, profiles):
     profiles = Path(profiles).resolve()
     github = _scheduled(directory, "github", store.path, PR_INTERVAL, partial(_poll, store))
     lines = {}
-    for line in native_skills.SOURCES:
+    for line in ("matt", "lauren", "addy"):
         profile = profiles / line
         native = profile / "native"
+        if line == "lauren":
+            cursor_store = profile / "cursor"
+            if not (cursor_store / lauren_native.SOURCE.revision / "git-index.json").is_file():
+                lines[line] = {"state":"unprovisioned"}
+                continue
+            lines[line] = _scheduled(directory, line, cursor_store, SYNC_INTERVAL, partial(_refresh, line, profile))
+            continue
         if not (native / "owner" / line).is_file() or not (native / "versions.sqlite3").is_file():
             lines[line] = {"state": "unprovisioned"}
             continue

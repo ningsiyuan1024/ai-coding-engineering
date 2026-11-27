@@ -271,7 +271,7 @@ class PlannerTests(unittest.TestCase):
         self.lines.stop()
         d = self.root / "probes" / "id"
         d.mkdir(parents=True)
-        (d / "discovery.json").write_text(json.dumps({"line":"sylan", "revision":"b"*64,
+        (d / "discovery.json").write_text(json.dumps({"line":"sylan", "host":"codex", "revision":"b"*64,
                                                      "authenticated":True}))
         native = MagicMock()
         native.__enter__.return_value.capabilities.return_value = {"authenticated": False}
@@ -282,21 +282,81 @@ class PlannerTests(unittest.TestCase):
         self.assertFalse(actual["sylan"]["authenticated"])
         self.assertIsNone(actual["matt"]["authenticated"])
 
-    def test_external_line_uses_selected_profile_and_native_effort_catalog(self):
+    def test_cli_profiles_reaches_initial_probe_and_offer_readback(self):
+        profiles = self.root / "external" / "profiles"
+        probes = planner.probe_lines
+        with patch("builtins.print"):
+            code = planner.main(["--root", str(self.root), "--profiles", str(profiles),
+                                 "--transport", "responses", "--expected-revision", "0",
+                                 "--trigger", "initial-capacity-check"])
+        self.assertEqual(code, 0)
+        self.assertEqual([call.args for call in probes.call_args_list],
+                         [(self.root, profiles), (self.root, profiles)])
+
+    def test_reference_lines_only_probe_matching_native_host_and_profile(self):
         self.lines.stop()
-        probe = self.root / "probes/matt"
-        probe.mkdir(parents=True)
+        profiles = self.root / "profiles"
         revision = "d" * 40
-        (probe / "discovery.json").write_text(json.dumps({"line":"matt", "revision":revision}))
-        profiles = self.root / "shared-native-cache"
-        host = MagicMock()
-        host.__enter__.return_value.capabilities.return_value = {"authenticated": True}
-        host.__enter__.return_value.discover.return_value = {"model_efforts": {"default": ["medium"]}}
-        with patch.object(planner.runner, "profile", return_value=(revision, probe, probe)) as pin, \
-                patch.object(planner.runner, "host", return_value=host):
-            result = planner.probe_lines(self.root, profiles)["matt"]
-        pin.assert_called_once_with("matt", profiles, pinned=revision)
-        self.assertEqual(result["models"], {"default": ["medium"]})
+        for folder, host, base in (("1", "codex", profiles), ("2", "claude", profiles),
+                                   ("3", "codex", self.root / "unrelated")):
+            for line in ("matt", "addy", "lauren"):
+                d = self.root / "probes" / (folder + line)
+                d.mkdir(parents=True)
+                (d / "discovery.json").write_text(json.dumps({
+                    "line": line, "revision": revision if folder == "1" else "a"*40,
+                    "profiles": str(base), "host": host}))
+        native = MagicMock()
+        rt = native.__enter__.return_value
+        rt.capabilities.return_value = {"authenticated": True, "models": {"gpt-6.2-sol":["medium"]}}
+        with patch.object(planner.runner, "profile", return_value=(revision, profiles, {})) as pin, \
+                patch.object(planner.runner, "host", return_value=native):
+            result = planner.probe_lines(self.root, profiles)
+            self.assertEqual({call.args[0] for call in pin.call_args_list}, {"matt", "addy"})
+            for call in pin.call_args_list:
+                self.assertEqual((call.args[1], call.kwargs["pinned"]), (profiles, revision))
+            for line in ("matt", "addy"):
+                self.assertEqual(result[line]["models"], {"gpt-6.2-sol":["medium"]})
+                self.assertTrue(result[line]["authenticated"])
+            self.assertEqual(result["lauren"]["models"], {})
+            for malformed in ({}, None, {"gpt-6.2-sol": "medium"}):
+                rt.capabilities.return_value = {"authenticated": True, "models": malformed}
+                result = planner.probe_lines(self.root, profiles)
+                self.assertEqual(result["matt"]["models"], {})
+                self.assertTrue(result["matt"]["authenticated"])
+        rt.discover.assert_not_called()
+
+    def test_readonly_native_seed_and_held_cursor_apply_to_offers(self):
+        self.seed["schema_version"] = "1.1"
+        self.seed["capacity"]["now"].update(heavy_build_slots=0, gpu_or_paid_benchmark_calls=0)
+        self.seed["capacity"]["after_headroom"]["implementation_slots"] = 0
+        requests = [{"lines":[label], "host":planner.NATIVE_HOSTS[line],
+                     "model_request":"gpt-6.2-sol", "effort_request":"medium"}
+                    for label,line in planner.NAMES.items()]
+        self.seed["model_allocation"]["line_requests"] = requests
+        self.seed_path.write_text(json.dumps(self.seed))
+        self.assertEqual(planner.dispatch_resources(self.seed_path, "lauren")["slots"], 0)
+        self.assertEqual(planner.dispatch_resources(self.seed_path, "matt")["slots"], 1)
+        self.cap["models"] = {model:["medium"] for model in
+                              ("claude-opus", "auto", "sonnet", "default", "gpt-6.2-sol", "other")}
+        proof = self.decide()
+        self.assertEqual(proof["decision"]["model"], "gpt-6.2-sol")
+        view = json.loads(self.client.run_data_only.call_args.args[0].split(planner.GUIDANCE + "\n")[1])
+        self.assertEqual(len(view["options"]), 1)
+        for bad in ("claude-opus","sonnet","anthropic/haiku","auto","default"):
+            requests[0]["model_request"] = bad
+            self.seed_path.write_text(json.dumps(self.seed))
+            with self.subTest(model=bad), self.assertRaises(ValueError):
+                planner.read_seed(self.seed_path)
+        requests[0]["model_request"] = "gpt-6.2-sol"
+        requests[0]["host"] = "claude"
+        self.seed_path.write_text(json.dumps(self.seed))
+        with self.assertRaises(ValueError):
+            planner.read_seed(self.seed_path)
+        requests[0]["host"] = "codex"
+        self.seed["capacity"]["after_headroom"]["implementation_slots"] = 1
+        self.seed_path.write_text(json.dumps(self.seed))
+        with self.assertRaises(ValueError):
+            planner.read_seed(self.seed_path)
 
 
 if __name__ == "__main__":

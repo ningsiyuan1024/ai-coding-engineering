@@ -65,7 +65,7 @@ defmodule FactorySymphonySmoke do
       File.mkdir_p!(Path.dirname(target))
       File.cp!(Path.join(original, relative), target)
     end)
-    patch = Path.join(__DIR__, "worker-injection.patch")
+    patch = Path.expand("../../workflows/symphony/worker-injection.patch", __DIR__)
     {output, status} = System.cmd("git", ["apply", "--whitespace=error", patch], cd: scratch, stderr_to_stdout: true)
     ensure(status == 0, "Could not apply the narrow injection patch: #{output}")
     Enum.each(@files, &Code.compile_file(Path.join(scratch, &1)))

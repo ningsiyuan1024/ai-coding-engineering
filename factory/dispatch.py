@@ -1,17 +1,20 @@
-"""Run an admitted native turn from the shared pool. One pilot slot per factory host."""
+"""Admit work from the shared pool for Symphony's supervised native workers."""
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 
 from . import runner
 from .planner import dispatch_resources
+from .runtime import RuntimeUnavailable
 from .state import Conflict, LINES, Store
 
 
@@ -37,32 +40,62 @@ def admission(path):
         yield
 
 
+@contextmanager
+def available_slot(path):
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(admission(path))
+        except Conflict:
+            yield False
+            return
+        yield True
+
+
+def requested_model_allowed(model):
+    return (isinstance(model, str) and bool(model) and not re.search(
+        r"(?:^|[/_.:-])(?:anthropic|claude|sonnet|opus|haiku|fable|auto|default)(?:$|[/_.:\[\]-])",
+        model, flags=re.I))
+
+
 def route_available(root, profiles, plan, line, read_only, *, pinned=None):
     policy = dispatch_resources(plan, line, root=root, read_only=read_only)
     if policy["slots"] < 1:
         return policy, "no_planner_slot"
-    revision, home, plugin = runner.profile(line, profiles, pinned=pinned)
+    if not requested_model_allowed(policy["model"]):
+        return policy, "model_replan_required"
+    try:
+        revision, home, plugin = runner.profile(line, profiles, pinned=pinned)
+    except (OSError, ValueError, RuntimeUnavailable, subprocess.SubprocessError):
+        return policy, "native_profile_unavailable"
     policy["installed_revision"] = revision
     if policy["profile_revision"] not in (None, revision):
         return policy, "profile_revision_changed"
     probe = root / "admission" / line
     probe.mkdir(parents=True, exist_ok=True)
-    with runner.host(line, home, probe, plugin, read_only=True) as host:
-        caps = host.capabilities()
-        if not caps["authenticated"]:
-            return policy, "native_login_required"
-        model_efforts = caps["models"] if line == "sylan" else host.discover()["model_efforts"]
-        if policy["effort"] not in model_efforts.get(policy["model"], []):
-            return policy, "model_replan_required"
+    try:
+        with runner.host(line, home, probe, plugin, read_only=True) as host:
+            caps = host.capabilities()
+            if not caps["authenticated"]:
+                return policy, "native_login_required"
+            model_efforts = caps.get("models")
+            levels = model_efforts.get(policy["model"]) if isinstance(model_efforts, dict) else None
+            if not isinstance(levels, (list, tuple)) or policy["effort"] not in levels:
+                return policy, "model_replan_required"
+    except (OSError, ValueError, RuntimeUnavailable, subprocess.SubprocessError):
+        # A missing profile credential or local CLI is specific to this production line.
+        # The planner decision was verified above, outside this error boundary.
+        return policy, "native_host_unavailable"
     return policy, None
 
 
-def tick(store, root, profiles, plan, sources, *, read_only=True, eligible_ids=None):
-    """Resume original owners first. A fresh native selection must survive a second upstream check."""
+def tick(store, root, profiles, plan, sources, *, read_only=True, eligible_ids=None, refresh_scope=None):
+    """Register a native line's selection. Symphony owns execution and monitoring."""
     from .eligibility import read_candidate
 
     root, profiles = Path(root).resolve(), Path(profiles).resolve()
-    with admission(store.path.with_suffix(".dispatch.lock")):
+    with available_slot(store.path.with_suffix(".dispatch.lock")) as acquired:
+        if not acquired:
+            return {"state": "occupied"}
         pool = store.pool()
         if any(t["active_run"] for t in pool):
             return {"state": "occupied"}
@@ -76,6 +109,18 @@ def tick(store, root, profiles, plan, sources, *, read_only=True, eligible_ids=N
         order = list(dict.fromkeys([t["owner"] for t in pending] + list(LINES)))
         for line in order:
             task = next((t for t in pending if t["owner"] == line), None)
+            if task and not Path(task["worktree"]).is_dir():
+                source = sources.get(task["upstream_key"].rsplit("/", 1)[0])
+                if not source:
+                    reasons[line] = "worktree_source_required"
+                    continue
+                task = runner.claim(store, task["id"], line, source["path"], task["base"], root, profiles,
+                                    selected_revision=task["revision"])
+            if task and eligible_ids is not None and task["id"] not in eligible_ids:
+                # Linear intake watches Backlog. The native worker independently reconciles
+                # its broader active states and owns all follow-up work for this claim.
+                reasons[line] = "owned_outside_intake"
+                continue
             if not task and any(t["owner"] == line and t["state"] != "closed" for t in pool):
                 reasons[line] = "pilot_already_owned"
                 continue
@@ -112,22 +157,16 @@ def tick(store, root, profiles, plan, sources, *, read_only=True, eligible_ids=N
                 live = read_candidate(task)
                 if live["blocked"] or live["revision"] != evidence[selected]["revision"]:
                     return {"state": "upstream_changed", "task": selected}
+                if refresh_scope is not None and selected not in refresh_scope():
+                    return {"state": "linear_scope_changed", "task": selected}
+                current_policy = dispatch_resources(plan, line, root=root, read_only=read_only)
+                if current_policy["sha256"] != policy["sha256"] or not current_policy["slots"]:
+                    return {"state": "plan_changed", "task": selected}
                 source = sources[task["upstream_key"].rsplit("/", 1)[0]]
                 task = runner.claim(store, selected, line, source["path"], source["base"], root, profiles,
                                     selected_revision=policy["installed_revision"])
-            # A replan during selection takes effect before any engineering turn.
-            next_policy, why = route_available(root, profiles, plan, line, read_only, pinned=task["revision"])
-            if why or next_policy["sha256"] != policy["sha256"]:
-                return {"state": why or "plan_changed", "task": task["id"]}
-            result = runner.run(store, task["id"], root, profiles, policy["model"], policy["effort"],
-                                read_only=read_only, limits={"minutes":policy["minutes"], "tokens":policy["tokens"]},
-                                instructions=(
-                                    "Investigate the issue within the selected read-only scope and record findings."
-                                    if read_only else "Advance the local contribution within its authorized scope."
-                                ))
-            return {"state": "waiting_human" if result.get("decision") else "turn_completed",
-                    "line": line, "task": task["id"],
-                    "planner_revision": policy["revision"], "run": result}
+            return {"state": "awaiting_symphony", "line": line, "task": task["id"],
+                    "revision": task["revision"], "planner_revision": policy["revision"]}
         return {"state": "waiting", "lines": reasons}
 
 
@@ -141,6 +180,8 @@ def main(argv=None):
     p.add_argument("--local-write", action="store_true")
     p.add_argument("--watch", action="store_true", help="Poll until interrupted")
     p.add_argument("--observe-only", action="store_true", help="Reconcile state and maintain pins without admitting model turns")
+    p.add_argument("--maintain", action="store_true", help="Also perform due PR checks and skill updates on this single poll")
+    p.add_argument("--receipt", type=Path, help="Write a private atomic receipt for this admission pass")
     p.add_argument("--interval", type=int, default=60)
     p.add_argument("--symphony-root", type=Path, help="Installed Symphony elixir directory for live intake")
     args = p.parse_args(argv)
@@ -151,6 +192,25 @@ def main(argv=None):
         with admission(root / "dispatcher-service.lock"):
             return poll(args, root)
     return poll(args, root)
+
+
+def linear_scope(root, symphony_root, store):
+    if symphony_root:
+        if not (os.environ.get("OSS_LINEAR_API_KEY") or os.environ.get("LINEAR_API_KEY")):
+            return set(), "LinearAuthError"
+        from .linear import LinearError, sync_symphony
+        try:
+            result = sync_symphony(symphony_root, store.path.resolve())
+            return set(result["eligible_ids"]), "symphony_tracker"
+        except LinearError as exc:
+            return set(), type(exc).__name__
+    receipt = root / "linear-readback.json"
+    if receipt.is_file():
+        snapshot = json.loads(receipt.read_text(encoding="utf-8-sig"))
+        age = time.time() - datetime.fromisoformat(snapshot["observed_at"]).timestamp()
+        if 0 <= age <= 600:
+            return set(snapshot["eligible_ids"]), "linear_connector_snapshot"
+    return set(), "fresh_linear_snapshot_required"
 
 
 def poll(args, root):
@@ -164,32 +224,14 @@ def poll(args, root):
             sources = {} if args.observe_only else json.loads(config.read_text(encoding="utf-8-sig"))
             for entry in sources.values():
                 entry["path"] = (config.parent / entry["path"]).resolve()
-            scope = set()
-            intake_status = "fresh_linear_snapshot_required"
-            if args.symphony_root and not (os.environ.get("OSS_LINEAR_API_KEY") or os.environ.get("LINEAR_API_KEY")):
-                intake_status = "LinearAuthError"
-            elif args.symphony_root:
-                from .linear import LinearError, sync_symphony
-                try:
-                    scope.update(sync_symphony(args.symphony_root, store.path.resolve())["eligible_ids"])
-                    intake_status = "symphony_tracker"
-                except LinearError as exc:
-                    intake_status = type(exc).__name__
-            else:
-                # An interactive coordinator can supply a fresh read-back via its Linear connector.
-                receipt = root / "linear-readback.json"
-                if receipt.is_file():
-                    snapshot = json.loads(receipt.read_text(encoding="utf-8-sig"))
-                    age = time.time() - datetime.fromisoformat(snapshot["observed_at"]).timestamp()
-                    if 0 <= age <= 600:
-                        scope.update(snapshot["eligible_ids"])
-                        intake_status = "linear_connector_snapshot"
+            scope, intake_status = linear_scope(root, args.symphony_root, store)
             if args.observe_only:
                 result = {"state": "observing", "pool_size": len(store.pool()), "eligible_now": len(scope)}
             else:
-                result = tick(store, root, profiles, plan, sources, read_only=not args.local_write, eligible_ids=scope)
+                result = tick(store, root, profiles, plan, sources, read_only=not args.local_write,
+                              eligible_ids=scope, refresh_scope=lambda: linear_scope(root, args.symphony_root, store)[0])
             result["intake"] = intake_status
-            if args.watch:
+            if args.watch or args.maintain:
                 from .maintenance import maintain
                 result["maintenance"] = maintain(store, root, profiles)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -199,14 +241,18 @@ def poll(args, root):
         if result != previous:
             print(json.dumps(result, ensure_ascii=True), flush=True)
             previous = result
+        heartbeat = args.receipt or (root / "dispatcher-status.json" if args.watch else None)
+        if heartbeat:
+            update = heartbeat.with_suffix(f".{os.getpid()}.tmp")
+            data = {"pid": os.getpid(), "checked_at": datetime.now(timezone.utc).isoformat(), "result": result}
+            if args.watch:
+                data["interval_seconds"] = args.interval
+            if os.environ.get("FACTORY_SYMPHONY_PID"):
+                data["symphony_pid"] = os.environ["FACTORY_SYMPHONY_PID"]
+            update.write_bytes(runner.json_bytes(data))
+            os.replace(update, heartbeat)
         if not args.watch:
             return 0
-        heartbeat = root / "dispatcher-status.json"
-        update = heartbeat.with_suffix(f".{os.getpid()}.tmp")
-        data = {"pid": os.getpid(), "checked_at": datetime.now(timezone.utc).isoformat(),
-                "result": result, "interval_seconds": args.interval}
-        update.write_bytes(runner.json_bytes(data))
-        os.replace(update, heartbeat)
         stop_request = root / f"stop-{os.getpid()}.request"
         if stop_request.exists():
             stop_request.unlink()

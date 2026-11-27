@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import queue
@@ -13,7 +12,6 @@ import shutil
 import subprocess
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 
 
@@ -94,6 +92,8 @@ def _ignore(*args):
 
 
 def _cli(name, executable=None):
+    if name != "codex":
+        raise RuntimeUnavailable("This adapter requires the Codex executable")
     path = shutil.which(str(executable)) if executable else None
     if not executable:
         if os.name == "nt":
@@ -102,11 +102,7 @@ def _cli(name, executable=None):
     if not path:
         raise RuntimeUnavailable(f"{name} is not installed")
     if os.name == "nt" and Path(path).suffix.lower() in {".ps1", ".cmd", ".bat", ""}:
-        package, entry = {
-            "codex": ("@openai/codex", "bin/codex.js"),
-            "claude": ("@anthropic-ai/claude-code", "cli.js"),
-        }[name]
-        script = Path(path).parent / "node_modules" / package / entry
+        script = Path(path).parent / "node_modules/@openai/codex/bin/codex.js"
         node = shutil.which("node.exe")
         if not node or not script.is_file():
             raise RuntimeUnavailable(f"Cannot resolve native {name} executable from launcher")
@@ -124,6 +120,8 @@ class ProviderCredential:
 
 
 def _environment(profile, variable, credential=None):
+    if variable != "CODEX_HOME":
+        raise ValueError("Expected an isolated Codex home")
     host_home = Path.home().resolve()
     if profile in {host_home, host_home / ".codex", host_home / ".claude"}:
         raise ValueError("A dedicated production-line profile directory is required")
@@ -149,34 +147,22 @@ def _environment(profile, variable, credential=None):
                 "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper",
                 "GIT_CONFIG_VALUE_0": "", "GCM_INTERACTIVE": "never"})
     if credential is not None:
-        is_codex = variable == "CODEX_HOME"
-        origin = "https://api.openai.com/v1" if is_codex else "https://api.anthropic.com"
-        permitted = {"OPENAI_API_KEY"} if is_codex else {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
+        origin = "https://api.openai.com/v1"
         if (not re.fullmatch(r"FACTORY_[A-Z0-9_]+", credential.source)
-                or credential.target not in permitted or credential.base_url.rstrip("/") != origin):
+                or credential.target != "OPENAI_API_KEY" or credential.base_url.rstrip("/") != origin):
             raise ValueError("Credential requires a dedicated source and its matching official endpoint")
         if not os.environ.get(credential.source):
             raise RuntimeUnavailable("No credential configured in the selected environment binding")
-        if is_codex:
-            import tomllib
-            config_file = profile / "config.toml"
-            config = tomllib.loads(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
-            if (config.get("model_provider", "openai") != "openai"
-                    or config.get("openai_base_url", origin).rstrip("/") != origin
-                    or "openai" in config.get("model_providers", {})):
-                raise ValueError("Codex profile has routing overrides incompatible with the credential binding")
-        else:
-            for filename in ("settings.json", "settings.local.json"):
-                settings_file = profile / filename
-                if settings_file.exists():
-                    config = json.loads(settings_file.read_text(encoding="utf-8"))
-                    overrides = {k.upper() for k in config.get("env", {})}
-                    if ("apiKeyHelper" in config or any(k.startswith(("ANTHROPIC_", "CLAUDE_CODE_USE_"))
-                                                       for k in overrides)):
-                        raise ValueError("Claude profile has routing overrides incompatible with the credential binding")
+        import tomllib
+        config_file = profile / "config.toml"
+        config = tomllib.loads(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
+        if (config.get("model_provider", "openai") != "openai"
+                or config.get("openai_base_url", origin).rstrip("/") != origin
+                or "openai" in config.get("model_providers", {})):
+            raise ValueError("Codex profile has routing overrides incompatible with the credential binding")
         env.pop(credential.source, None)
         env[credential.target] = os.environ[credential.source]
-        env["OPENAI_BASE_URL" if is_codex else "ANTHROPIC_BASE_URL"] = origin
+        env["OPENAI_BASE_URL"] = origin
     return env
 
 
@@ -229,17 +215,19 @@ class _Stream:
 
 class CodexRuntime:
     def __init__(self, profile_home, worktree, executable=None, timeout=900, read_only=False,
-                 credential=None):
+                 credential=None, native_plugin=None):
         self.profile = Path(profile_home).resolve()
         self.cwd = Path(worktree).resolve(strict=True)
         self.command = _cli("codex", executable)
         self.env = _environment(self.profile, "CODEX_HOME", credential)
+        self.native_plugin = native_plugin
         if credential is not None:
             self.command.extend(["-c", 'model_provider="openai"', "-c",
                                  'openai_base_url="https://api.openai.com/v1"'])
         self.timeout = timeout
         self.read_only = read_only
         self.stream = None
+        self.skill_paths = {}
         self.counter = 0
         self.active = None
         self.running_thread = None
@@ -320,13 +308,41 @@ class CodexRuntime:
     def isolate_skills(self):
         # Some Windows builds also scan the host .agents directory. Store exclusions
         # through Codex's profile-local configuration API and re-read effective state.
+        def allowed(skill):
+            path = Path(skill["path"]).resolve()
+            if not path.is_relative_to(self.profile):
+                return False
+            if self.native_plugin is None:
+                return True
+            return (skill.get("pluginId") == self.native_plugin["plugin_id"]
+                    and path.is_relative_to(Path(self.native_plugin["installed_path"]).resolve()))
+
         for skill in self.skills():
-            if skill["enabled"] and not Path(skill["path"]).resolve().is_relative_to(self.profile):
+            if skill["enabled"] and not allowed(skill):
                 self._rpc("skills/config/write", {"path": skill["path"], "enabled": False})
         enabled = [s for s in self.skills() if s["enabled"]]
-        if any(not Path(s["path"]).resolve().is_relative_to(self.profile) for s in enabled):
+        if any(not allowed(s) for s in enabled):
             raise RuntimeUnavailable("Foreign skills are enabled in this production line")
+        if self.native_plugin is not None:
+            observed = [s["name"].split(":")[-1] for s in enabled]
+            if sorted(observed) != sorted(self.native_plugin["skills"]):
+                raise RuntimeUnavailable("Codex did not load the pinned author's complete plugin")
+        self.skill_paths = {Path(s["path"]).resolve():s["name"] for s in enabled if "name" in s}
         return enabled
+
+    def observe_tool(self, item, emit):
+        if item["type"] == "commandExecution" and item.get("exitCode") == 0 and item.get("status") == "completed":
+            for action in item.get("commandActions", []):
+                if action.get("type") == "read" and isinstance(action.get("path"), str):
+                    candidate = Path(item.get("cwd") or self.cwd) / action["path"]
+                    name = self.skill_paths.get(candidate.resolve())
+                    if name:
+                        emit("runtime.skill_read", {"skill.name":name})
+        if item["type"] == "collabAgentToolCall":
+            tool = item.get("tool")
+            receivers = item.get("receiverThreadIds", [])
+            if isinstance(tool, str) and re.fullmatch(r"[a-zA-Z_]{1,64}", tool) and isinstance(receivers, list):
+                emit("runtime.subagent", {"operation":tool, "receiver.count":len(receivers)})
 
     def open_session(self, model, effort, thread_id=None, *, require_auth=False):
         """Start or resume the native thread and verify its effective profile before any turn."""
@@ -344,7 +360,7 @@ class CodexRuntime:
         config = {"model_reasoning_effort": effort}
         if os.name == "nt" and not self.read_only:
             config["windows.sandbox"] = "unelevated"
-        params = {"cwd": str(self.cwd), "model": model, "config": config,
+        params = {"cwd": str(self.cwd), "model": model, "modelProvider":"openai", "config": config,
                   "sandbox": sandbox, "approvalPolicy": "never"}
         if thread_id:
             params["threadId"] = thread_id
@@ -353,7 +369,7 @@ class CodexRuntime:
         expected_sandbox = "readOnly" if self.read_only else "workspaceWrite"
         instructions = [Path(p).resolve() for p in opened.get("instructionSources", [])]
         policy = opened["sandbox"]
-        if (opened["model"] != model or opened.get("reasoningEffort") != effort
+        if (opened["model"] != model or opened.get("modelProvider") != "openai" or opened.get("reasoningEffort") != effort
                 or policy["type"] != expected_sandbox or policy.get("networkAccess") is True
                 or any(not Path(p).resolve().is_relative_to(self.cwd)
                        for p in policy.get("writableRoots", []))
@@ -380,6 +396,7 @@ class CodexRuntime:
             elif name == "item/completed":
                 item = params["item"]
                 kind = item["type"]
+                self.observe_tool(item, on_event)
                 if kind == "agentMessage":
                     if item.get("phase") != "commentary":
                         messages.append(item.get("text", ""))
@@ -426,187 +443,3 @@ class CodexRuntime:
             thread, turn = self.active
             self.stream.send({"id": -1, "method": "turn/interrupt",
                               "params": {"threadId": thread, "turnId": turn}})
-
-
-class ClaudeRuntime:
-    """Claude Code owns skill selection, subagents, tools, and transcripts."""
-
-    # Native command permission rules cover normal CLI publication commands.
-    # They do not constitute an operating-system network boundary for arbitrary code.
-    _publication_rules = [
-        "Bash(git push:*)", "Bash(git send-email:*)",
-        *(f"Bash(gh pr {action}:*)" for action in
-          ("create", "edit", "comment", "review", "merge", "close", "reopen", "ready")),
-        *(f"Bash(gh issue {action}:*)" for action in
-          ("create", "edit", "comment", "close", "reopen", "delete", "transfer")),
-        "Bash(gh api *--method*)", "Bash(gh api *-X*)", "Bash(gh api *--input*)",
-        "Bash(gh api *--field*)", "Bash(gh api *--raw-field*)", "Bash(gh api * -f*)",
-        "Bash(gh api * -F*)", "Bash(gh release create:*)", "Bash(gh workflow run:*)",
-    ]
-
-    def __init__(self, profile_home, worktree, plugin_root, executable=None,
-                 timeout=900, read_only=False, credential=None):
-        self.profile = Path(profile_home).resolve()
-        self.cwd = Path(worktree).resolve(strict=True)
-        self.plugin = Path(plugin_root).resolve(strict=True)
-        manifest = self.plugin / ".claude-plugin" / "plugin.json"
-        self.plugin_name = json.loads(manifest.read_text(encoding="utf-8"))["name"]
-        self.command = _cli("claude", executable)
-        self.env = _environment(self.profile, "CLAUDE_CONFIG_DIR", credential)
-        self.timeout, self.read_only = timeout, read_only
-        self.stream = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        if self.stream is not None:
-            self.stream.close()
-            self.stream = None
-
-    def capabilities(self):
-        status = subprocess.run(self.command + ["auth", "status", "--json"], cwd=self.cwd,
-                                env=self.env, capture_output=True, timeout=30, encoding="utf-8")
-        try:
-            account = json.loads(status.stdout)
-        except ValueError as exc:
-            raise RuntimeUnavailable("Could not read Claude profile authentication status") from exc
-        return {"authenticated": account.get("loggedIn") is True, "requires_auth": True,
-                "auth_method": account.get("authMethod")}
-
-    def _host_args(self):
-        settings = {"permissions": {"deny": self._publication_rules}}
-        args = ["--plugin-dir", str(self.plugin), "--setting-sources", "user",
-                "--permission-mode", "dontAsk" if self.read_only else "acceptEdits"]
-        if self.read_only:
-            # Read/plan turns exclude shell, hook and remote tool writes. Claude's
-            # tool permissions do not create an OS sandbox on native Windows.
-            args.extend(["--tools", "Read,Glob,Grep,Skill,AskUserQuestion", "--strict-mcp-config"])
-            settings["disableAllHooks"] = True
-        return args + ["--settings", json.dumps(settings)]
-
-    def discover(self):
-        """Read native commands and agents via the Claude SDK handshake, with no user turn."""
-        args = ["--print", "--input-format", "stream-json", "--output-format", "stream-json",
-                "--verbose", *self._host_args()]
-        stream = _Stream(self.command + args, self.cwd, self.env)
-        def query(subtype):
-            request_id = str(uuid.uuid4())
-            stream.send({"type": "control_request", "request_id": request_id,
-                         "request": {"subtype": subtype}})
-            deadline = time.monotonic() + min(self.timeout, 45)
-            while True:
-                packet = stream.next(deadline)
-                response = packet.get("response", {})
-                if packet.get("type") == "control_response" and response.get("request_id") == request_id:
-                    if response.get("subtype") != "success":
-                        raise RuntimeUnavailable(f"Claude SDK {subtype} failed")
-                    return response["response"]
-        try:
-            metadata = query("initialize")
-            effective = query("get_settings")["effective"]
-            observed = effective.get("permissions", {}).get("deny", [])
-            if not set(self._publication_rules).issubset(observed):
-                raise RuntimeUnavailable("Claude did not apply the expected publication restrictions")
-            return {"commands": [c["name"] for c in metadata["commands"]],
-                    "agents": [a["name"] for a in metadata["agents"]],
-                    "models": [m["value"] for m in metadata["models"]],
-                    "model_efforts": {m["value"]: list(m.get("supportedEffortLevels", []))
-                                      for m in metadata["models"] if m.get("supportsEffort") is True},
-                    "publication_rules_observed": len(self._publication_rules),
-                    "hooks_disabled": effective.get("disableAllHooks") is True}
-        finally:
-            stream.close()
-
-    def run(self, prompt, model, effort, thread_id=None, on_event=_ignore, on_thread=_ignore):
-        if effort not in {"low", "medium", "high", "max"}:
-            raise RuntimeUnavailable(f"Unsupported Claude Code reasoning effort: {effort}")
-        if not self.capabilities()["authenticated"]:
-            raise RuntimeUnavailable("Claude authentication required in this production-line profile")
-        session = str(uuid.UUID(thread_id)) if thread_id else str(uuid.uuid4())
-        args = ["--print", "--output-format", "stream-json", "--verbose", "--model", model,
-                "--effort", effort, "--resume" if thread_id else "--session-id", session,
-                *self._host_args()]
-        self.stream = _Stream(self.command + args, self.cwd, self.env)
-        try:
-            self.stream.process.stdin.write(prompt)
-            self.stream.process.stdin.close()
-            deadline = time.monotonic() + self.timeout
-            initialized = False
-            delegated = set()
-            error_kind = None
-            while True:
-                event = self.stream.next(deadline)
-                kind = event.get("type")
-                if kind == "system" and event.get("subtype") == "init":
-                    plugins = event.get("plugins", [])
-                    if (event.get("session_id") != session or len(plugins) != 1
-                            or plugins[0].get("name") != self.plugin_name
-                            or Path(plugins[0].get("path", "")).resolve() != self.plugin):
-                        raise RuntimeUnavailable("Claude loaded an unexpected session or plugin set")
-                    initialized = True
-                    on_thread(session)
-                    on_event("runtime.plugin", {"plugin.name": self.plugin_name,
-                             "skill.count": len(event.get("skills", []))})
-                    resolved_model = event.get("model")
-                    if isinstance(resolved_model, str) and re.fullmatch(r"[\w.:-]{1,128}", resolved_model):
-                        on_event("runtime.model", {"model": resolved_model, "model.stage": "initialization"})
-                elif kind == "assistant" and initialized:
-                    message = event.get("message", {})
-                    if event.get("error") in {"authentication_failed", "billing_error", "rate_limit",
-                                              "invalid_request", "server_error", "unknown"}:
-                        error_kind = event["error"]
-                        on_event("runtime.error", {"error.kind": error_kind})
-                    if event.get("parent_tool_use_id") in delegated:
-                        on_event("runtime.subagent.activity", {"activity.kind": "assistant_reply"})
-                    for block in message.get("content", []):
-                        if block.get("type") != "tool_use":
-                            continue
-                        tool = block.get("name", "")
-                        if re.fullmatch(r"[\w:.-]{1,128}", tool):
-                            attrs = {"tool.name": tool}
-                            if tool == "AskUserQuestion":
-                                question = _question_text(block.get("input", {}))
-                                if question:
-                                    on_event("runtime.tool", attrs)
-                                    self.interrupt()
-                                    raise NativeQuestion(question)
-                            if tool == "Skill":
-                                skill = block.get("input", {}).get("skill", "")
-                                if isinstance(skill, str) and re.fullmatch(r"[\w:.-]{1,128}", skill):
-                                    attrs["skill.name"] = skill
-                            if tool in {"Agent", "Task"} and isinstance(block.get("id"), str):
-                                delegated.add(block["id"])
-                                on_event("runtime.subagent.request", {"tool.name": tool})
-                            on_event("runtime.tool", attrs)
-                elif kind == "user" and initialized:
-                    for block in event.get("message", {}).get("content", []):
-                        if (isinstance(block, dict) and block.get("type") == "tool_result"
-                                and block.get("tool_use_id") in delegated):
-                            on_event("runtime.subagent.tool_result",
-                                     {"tool.error": block.get("is_error") is True})
-                elif kind == "result":
-                    usage = event.get("usage", {})
-                    on_event("runtime.usage", {f"usage.{k}": v for k, v in usage.items()
-                                              if type(v) is int})
-                    estimate = event.get("total_cost_usd")
-                    if type(estimate) in (int, float) and math.isfinite(estimate) and estimate >= 0:
-                        on_event("runtime.cost", {"cost.estimated_usd": estimate})
-                    for observed_model in event.get("modelUsage", {}):
-                        if re.fullmatch(r"[\w.:-]{1,128}", observed_model):
-                            on_event("runtime.model", {"model": observed_model, "model.stage": "usage"})
-                    failed = not initialized or event.get("is_error") or event.get("subtype") != "success"
-                    attrs = {"status": "failed" if failed else "completed"}
-                    if isinstance(event.get("permission_denials"), list):
-                        attrs["permission.denials"] = len(event["permission_denials"])
-                    on_event("runtime.turn", attrs)
-                    if failed:
-                        raise RuntimeUnavailable(f"Claude turn failed ({error_kind or 'native result error'})")
-                    return RunResult(session, event.get("uuid"), event.get("result", ""))
-        finally:
-            self.stream.close()
-            self.stream = None
-
-    def interrupt(self):
-        if self.stream and self.stream.process.poll() is None:
-            self.stream.process.terminate()

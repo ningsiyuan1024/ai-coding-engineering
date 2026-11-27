@@ -155,14 +155,16 @@ class Store:
             self._event(db, task_id, "claimed", {"line": line, "revision": revision, "base": base})
             return self._task(db, task_id)
 
-    def begin(self, task_id, line, model, effort, trace_id=None):
+    def begin(self, task_id, line, model, effort, trace_id=None, *, run_id=None, require_wakeup=False):
         if trace_id is not None:
             trace_id = _trace_id(trace_id)
         with self.transaction() as db:
             row = self._task(db,task_id)
             if row["owner"] != line or row["state"] not in ("claimed","ready_to_resume","failed"):
                 raise Conflict("Task is not runnable by this line")
-            run = str(uuid.uuid4())
+            if require_wakeup and not self._has_wakeup(db, task_id):
+                raise Conflict("This wake-up has already been served")
+            run = str(uuid.UUID(run_id)) if run_id is not None else str(uuid.uuid4())
             db.execute("""INSERT INTO runs (id,task,line,model,effort,state,started,trace_id)
                 VALUES(?,?,?,?,?,'running',?,?)""",
                        (run,task_id,line,model,effort,now(),trace_id))
@@ -328,10 +330,14 @@ class Store:
             task = self._task(db, task_id)
             if task["state"] not in ("claimed", "ready_to_resume", "failed"):
                 return False
-            last = db.execute("""SELECT type FROM events WHERE task=? AND type IN
-                ('run_started','claimed','decision_received','turn_requested','pr_review','pr_ci','pr_reopened')
-                ORDER BY rowid DESC LIMIT 1""", (task_id,)).fetchone()
-            return last is not None and last["type"] != "run_started"
+            return self._has_wakeup(db, task_id)
+
+    @staticmethod
+    def _has_wakeup(db, task_id):
+        last = db.execute("""SELECT type FROM events WHERE task=? AND type IN
+            ('run_started','claimed','decision_received','turn_requested','pr_review','pr_ci','pr_reopened')
+            ORDER BY rowid DESC LIMIT 1""", (task_id,)).fetchone()
+        return last is not None and last["type"] != "run_started"
 
     def recover(self, task_id, run_id):
         """Release a terminated host's reservation by exact run ID; preserve its native session."""

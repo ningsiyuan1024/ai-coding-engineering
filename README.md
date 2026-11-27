@@ -50,7 +50,7 @@ flowchart TD
 
 四条生产线独立运行，共享任务池、基础设施及观测评测标准。每条生产线的主 Agent 自主选择本体系的 Skills，不预设固定 Skill Chain，也不默认混用其他体系。记录实际 Skill 调用、工程产物、验证结果、人工介入、成本与 PR 结果，事后评估路由和交付质量。
 
-协调器使用 Python 3.11、Git 和 SQLite，Sylan 使用 Codex app-server，三条参考线使用 Claude Code 的原生插件加载器。任务领取时固定上游基线、生产线和 Skills 版本。人工作答和 PR 事件会唤醒原生产线。
+协调器使用 Python 3.11、Git 和 SQLite。Sylan、Matt 和 Addy 使用隔离的 Codex profile。Matt 和 Addy 通过 Codex 原生插件机制安装作者的固定版本。Lauren 保留作者的 Cursor 插件；其子代理模型策略仍待验证。任务领取时固定上游基线、生产线和 Skills 版本。人工作答和 PR 事件会唤醒原生产线。
 
 [架构设计](ARCHITECTURE.md) · [20 项架构决策](DECISIONS.md) · [实施路线与验收](ROADMAP.md)
 
@@ -67,9 +67,11 @@ python -m factory doctor addy
 python -m unittest discover -s tests -v
 ```
 
-首次使用某条参考线时，需要访问 GitHub 获取固定版本的完整作者插件。已有 profile 可通过 `python -m factory --profiles <目录> doctor <线名>` 检查。探针使用真实原生宿主和本机 OTLP 接收端，分别回读三种信号。用户可通过 `python -m factory --profiles <目录> login <线名>` 在隔离配置中完成官方登录。
+首次使用某条参考线时，需要从 GitHub 获取作者固定版本，或使用同版本的官方归档。已有 profile 可通过 `python -m factory --profiles <目录> doctor <线名>` 检查。Codex 探针重读原生宿主的模型、认证和 Skills，Cursor 探针检查固定插件的文件和声明。两种检查都将证据写入本机 OTLP 接收端。三条 Codex 生产线可通过 `python -m factory --profiles <目录> login <线名>` 在各自的隔离环境完成 OpenAI 登录。
 
-Claude 的只读调查槽允许 Read、Glob、Grep、Skill 和 AskUserQuestion。需要作者 hooks、子代理或文件修改的工程回合使用本地写入槽。Windows 上的 Claude 工具规则约束常见发布命令。需要系统级出站隔离的部署还须在运行宿主配置网络策略。Linear 服务凭据由协调器进程持有。
+使用相同的 `--profiles` 运行 `status` 可在一处查看每条线最后一次宿主检查的时间、登录状态、Skills 数量、在手工单和人工决定。宿主检查由 `doctor` 更新，真实工作回合另有独立的执行记录。
+
+Codex 的只读调查槽使用原生 read-only 沙箱。本地写入槽在任务 worktree 内运行，逐次检查模型、推理强度、沙箱和网络设置。Linear 服务凭据由协调器进程持有。Lauren 的调度入口会等待一份能约束主模型及全部子代理的 Cursor 模型策略。
 
 | 操作 | 入口 |
 |---|---|
@@ -80,9 +82,11 @@ Claude 的只读调查槽允许 Read、Glob、Grep、Skill 和 AskUserQuestion�
 | 调整资源或复议 | `python -m factory.planner --help`。每版决定带原生模型回执、修订号和摘要。 |
 | 后台观察 | `python -m factory.dispatch --watch --observe-only`。心跳写在 `.factory-local/dispatcher-status.json`。Windows 可用 `scripts/start-observer.ps1`。 |
 
+**启动 Symphony 工厂实例**。在 Windows 上，从仓库根目录运行 `./scripts/start-factory.ps1 -SymphonyRoot <已编译的Elixir目录> -Profiles <生产线目录>`。可通过 `-Check` 核对部署配置，已有只读 Linear 凭据时可通过 `-PromptForLinearKey` 在本机输入。已有 `OSS_LINEAR_API_KEY` 或 `LINEAR_API_KEY` 的服务进程直接使用该变量。工厂实例在独立 BEAM 内加载 worker 扩展。原生 Orchestrator 监督任务进程，等待人工或上游时归还执行槽。Python 入池程序只负责核对候选和持久化各线的选择。[启动入口](workflows/symphony/worker_boot.exs) · [原生 worker](workflows/symphony/worker_adapter.ex)
+
 初始规划已有桌面 Astra Ultra 会话回执。无人工值守的重新规划使用显式的 `--transport responses`，只发送匿名候选计数、能力选项和预算。服务端返回实际模型、推理强度、请求 ID 与响应 ID 后才可生成新修订。这个 API 入口的账号能力仍待实测。
 
-2026-11-27 的原生宿主发现记录为 Matt 27 项、Lauren 59 项、Addy 26 项。首次审计时，四个隔离配置均待模型登录。真实贡献验收需将一项新任务从原生会话、Skills 调用、diff 和测试关联到上游交付。[宿主与 OTLP 实测](evidence/2026-11-27/host-discovery.json) · [隔离对照](evidence/2026-11-27/profile-isolation.json) · [实施进展](ROADMAP.md)
+真实贡献验收会将每项新任务的原生会话、实际 Skills 使用、diff 和测试关联到上游交付。历史宿主探针单独归档。当前生产线的宿主证据和待验收项见实施进展。[实施进展](ROADMAP.md)
 
 ## 文章精选
 

@@ -1,4 +1,4 @@
-"""Install one upstream Claude plugin, pinned to both a commit and a Git tree."""
+"""Install complete upstream plugin sources pinned to a commit and a Git tree."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import posixpath
 import re
 import sqlite3
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -27,8 +28,6 @@ class Source:
 SOURCES = {
     "matt": Source("mattpocock/skills", "6f7f7831a625f040a8e06a0e7954826b87ce775a",
                    "", "54981f8195880713ce8e965efeb8d520bf803133"),
-    "lauren": Source("cursor/plugins", "b7b93c36be9bcc36a74db438e0fd385d660bc559",
-                     "harness/pstack/claude-code", "7f8353b7412793e2dd572244f52355c52ffc2b79"),
     "addy": Source("addyosmani/agent-skills", "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
                    "", "e3efe619ae879ab25d9ccb5eabb1089620fcb315"),
 }
@@ -48,6 +47,39 @@ class NativeProfile:
 def _git_hash(kind: str, body: bytes) -> str:
     header = f"{kind} {len(body)}\0".encode("ascii")
     return hashlib.sha1(header + body).hexdigest()
+
+
+def verify_same_files(source, installed):
+    """Verify the native package manager copied the entire pinned file tree."""
+    def fail(error):
+        raise error
+
+    def fingerprints(directory):
+        root = Path(directory).absolute()
+        if os.name == "nt" and not str(root).startswith("\\\\?\\"):
+            name = str(root)
+            root = Path("\\\\?\\UNC\\" + name[2:] if name.startswith("\\\\") else "\\\\?\\" + name)
+        def reject_link(path):
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise ValueError("Unexpected link in the native plugin tree")
+
+        reject_link(root)
+        if not root.is_dir():
+            raise ValueError("Missing native plugin directory")
+        files = {}
+        for current, dirs, names in os.walk(root, onerror=fail):
+            for name in dirs + names:
+                reject_link(Path(current) / name)
+            for name in names:
+                path = Path(current) / name
+                files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).digest()
+        return files
+
+    expected = fingerprints(source)
+    if not expected or fingerprints(installed) != expected:
+        raise ValueError("Installed native plugin differs from the verified upstream tree")
+    return len(expected)
 
 
 def _tree_hash(entries: dict) -> str:
@@ -176,7 +208,10 @@ def _inspect(line, directory, source):
             seen.add(key)
     if seen != expected.keys():
         raise ValueError("Installed plugin is incomplete")
-    manifest = json.loads((root / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
+    # Codex accepts Matt's published compatibility manifest. Addy publishes a Codex manifest.
+    codex_manifest = root / ".codex-plugin/plugin.json"
+    manifest_path = codex_manifest if codex_manifest.is_file() else root / ".claude-plugin/plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     spec = manifest.get("skills", "skills")
     if isinstance(spec, list):
         paths = [root / folder / "SKILL.md" for folder in spec]
@@ -262,7 +297,7 @@ def _install(line, native, source, archive):
 def provision(line: str, profile_root: Path, *, archive: Path | None = None) -> NativeProfile:
     """Start a new task on the selected revision, defaulting to the checked-in pin.
 
-    The caller activates plugin_root using Claude's session-scoped --plugin-dir.
+    The caller registers the local plugin_root with its native package manager.
     An optional official tarball permits offline installation. No host is started.
     """
     native = _store(line, profile_root)

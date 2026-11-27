@@ -11,7 +11,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from .native_skills import provision
-from .runtime import ClaudeRuntime, CodexRuntime, NativeQuestion, ProviderCredential, prepare_worktree
+from .runtime import CodexRuntime, NativeQuestion, ProviderCredential, RuntimeUnavailable, prepare_worktree
 from .state import Conflict
 from .telemetry import LocalTraceReceiver, Trace
 
@@ -70,8 +70,20 @@ def profile(line, profiles, *, pinned=None):
         if hashlib.sha256((home / "AGENTS.md").read_bytes()).hexdigest() != pinned:
             raise Conflict("Sylan workflow revision does not match its content")
         return pinned, home, None
+    if line == "lauren":
+        from .lauren_native import provision as install_cursor
+        cursor = install_cursor(line_root, pinned=pinned)
+        return cursor.revision, cursor.home, cursor
+    if line not in ("matt", "addy"):
+        raise ValueError("Unknown factory line")
     native = provision(line, line_root) if pinned is None else open_pinned(line, line_root, pinned)
-    return native.revision, line_root / "hosts" / native.revision, native.plugin_root
+    home = line_root / "codex" / native.revision
+    if line == "matt":
+        from .matt_codex import provision as install
+    else:
+        from .addy_codex import provision as install
+    plugin = install(home, native.plugin_root, native.revision)
+    return native.revision, home, plugin
 
 
 def open_pinned(line, line_root, pinned):
@@ -80,16 +92,18 @@ def open_pinned(line, line_root, pinned):
 
 
 def host(line, home, cwd, plugin, *, read_only):
-    binding = Path(home).parents[1] / "credential-binding.json"
+    if line not in ("sylan", "matt", "addy"):
+        raise RuntimeUnavailable("No verified non-Claude runtime for this production line")
+    if line != "sylan" and (Path(home).parent.name != "codex" or not isinstance(plugin, dict)):
+        raise RuntimeUnavailable("An isolated native Codex plugin profile is required")
+    binding = Path(home).parents[1] / ("credential-binding.json" if line == "sylan" else "codex-credential-binding.json")
     credential = None
     if binding.is_file():
         fields = json.loads(binding.read_text(encoding="utf-8"))
         if not isinstance(fields, dict) or fields.keys() != {"source", "target", "base_url"}:
             raise ValueError("Expected source, target and base_url in the credential binding")
         credential = ProviderCredential(**fields)
-    if line == "sylan":
-        return CodexRuntime(home, cwd, read_only=read_only, credential=credential)
-    return ClaudeRuntime(home, cwd, plugin, read_only=read_only, credential=credential)
+    return CodexRuntime(home, cwd, read_only=read_only, credential=credential, native_plugin=plugin)
 
 
 def claim(store, task_id, line, repo, base, root, profiles, *, selected_revision=None):

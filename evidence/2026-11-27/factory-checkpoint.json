@@ -1,0 +1,77 @@
+{
+  "date": "2026-11-27",
+  "state": "paused_by_operator",
+  "pilot_tasks_in_pool": 4,
+  "autonomous_claims": 0,
+  "contribution_prs": 0,
+  "line_host_checks": {
+    "addy": {
+      "checked_at": "2026-11-27T04:27:33.358783+00:00",
+      "authenticated": false,
+      "skills_discovered": 26,
+      "revision": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "run_id": "800967ee-b02d-4e9d-adde-ed0113f65b08",
+      "host": "codex",
+      "verified_files": 330,
+      "clean_install_before": {
+        "installed": false,
+        "enabled": false,
+        "skills": 0
+      },
+      "clean_install_after": {
+        "installed": true,
+        "enabled": true,
+        "skills": 26
+      }
+    },
+    "lauren": {
+      "checked_at": "2026-11-27T04:25:50.086647+00:00",
+      "authenticated": null,
+      "skills_discovered": 0,
+      "revision": "b7b93c36be9bcc36a74db438e0fd385d660bc559",
+      "run_id": "82cdf46c-2179-48b7-a419-bbe65e4b9adb",
+      "host": "cursor",
+      "execution_gate": "cursor_delegated_model_policy_unverified",
+      "installed_skills": 59,
+      "verified_files": 554,
+      "plugin_version": "0.15.48",
+      "declared_agents": [
+        "comment-sicko",
+        "poteto-agent"
+      ],
+      "cursor_session_new": "authentication_required"
+    },
+    "matt": {
+      "checked_at": "2026-11-27T04:27:59.633019+00:00",
+      "authenticated": false,
+      "skills_discovered": 27,
+      "revision": "6f7f7831a625f040a8e06a0e7954826b87ce775a",
+      "run_id": "a68d7add-a872-41d0-bd54-25a8e0b4da5e",
+      "host": "codex",
+      "verified_files": 190,
+      "plugin": "mattpocock-skills@mattpocock"
+    },
+    "sylan": {
+      "checked_at": "2026-11-27T04:23:54.532744+00:00",
+      "authenticated": false,
+      "skills_discovered": 6,
+      "revision": "92624d5dbdc311bfa39636948c4d9fbd2a1824a2786443ae096a1f3fea27cea7",
+      "run_id": "8e68bd09-5b19-45f2-9e23-3682b01edcd4",
+      "host": "codex"
+    }
+  },
+  "resource_plan": {
+    "id": "factory-slice-20261127-02-native",
+    "sha256": "a5b199e1b38172bce2d79daf280f0f9521a68877c0daa34ab3877102cb460a73",
+    "model": "gpt-6.2-astra",
+    "effort": "ultra"
+  },
+  "last_completed_python_suite": {
+    "tests": 144,
+    "failures": 0,
+    "errors": 0
+  },
+  "python_suite_scope": "Last completed run before pause; final checkpoint was not retested.",
+  "service_linear_credential": "absent_at_last_check",
+  "pilot_model_turns": 0
+}

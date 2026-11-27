@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runner
@@ -81,39 +82,48 @@ def doctor(root, profiles, line):
                   "model_usage":None,"cost":None,"run_id":probe_id,"trace_id":trace.trace_id}
         try:
             with trace.span("factory.capability_probe") as span:
-                with runner.host(line,home,location,plugin,read_only=True) as rt:
-                    caps=rt.capabilities()
-                    result["authenticated"]=caps["authenticated"]
-                    if plugin is None:
+                result["profiles"] = str(profiles)
+                if line == "lauren":
+                    result.update(host="cursor", authenticated=None, skills=[],
+                                  installed_skills=len(plugin.skills), installed_agents=len(plugin.agents),
+                                  execution_gate="cursor_delegated_model_policy_unverified")
+                    span.event("profile.verified", attributes={"host.name":"cursor",
+                               "skill.installed":len(plugin.skills), "model.policy_verified":False})
+                else:
+                    with runner.host(line,home,location,plugin,read_only=True) as rt:
+                        caps=rt.capabilities()
+                        result["authenticated"]=caps["authenticated"]
                         enabled=rt.isolate_skills()
                         result["host"]="codex"
-                        result["skills"]=[s["name"] for s in enabled]
+                        result["skills"]=sorted(s["name"] for s in enabled)
                         result["astra_ultra_advertised"]="ultra" in caps["models"].get("gpt-6.2-astra", [])
-                    else:
-                        from .native_skills import open_pinned
-                        expected = open_pinned(line,profiles / line,revision)
-                        listing = rt.discover()
-                        result["host"]="claude"
-                        commands=set(listing["commands"])
-                        names = {skill for skill in expected.skills if skill in commands or
-                                 expected.plugin_name + ":" + skill in commands}
-                        missing = set(expected.skills) - names
-                        if missing:
-                            raise Conflict("Missing native commands: " + ", ".join(sorted(missing)))
-                        result["skills"]=sorted(names)
-                        result["agents"]=listing["agents"]
+                        if plugin is not None:
+                            result["plugin_id"]=plugin["plugin_id"]
                     span.event("host.discovery",attributes={"host.name":result["host"],
-                               "skill.count":len(result["skills"]),"auth.available":caps["authenticated"]})
-                    data=runner.json_bytes(result)
-                    runner.write_once(location/"discovery.json",data)
-                    span.add_artifact(f"probes/{probe_id}/discovery.json",kind="capability",
-                                      sha256=hashlib.sha256(data).hexdigest())
-                    span.set_status("ok")
+                               "skill.count":len(result["skills"]),"auth.available":result["authenticated"]})
+                data=runner.json_bytes(result)
+                runner.write_once(location/"discovery.json",data)
+                span.add_artifact(f"probes/{probe_id}/discovery.json",kind="capability",
+                                  sha256=hashlib.sha256(data).hexdigest())
+                span.set_status("ok")
         finally:
             trace.export()
     if not all(f(path,trace.trace_id) for f,path in (
             (read_trace,trace_file),(read_metrics,receiver.metrics_path),(read_logs,receiver.logs_path))):
         raise RuntimeError("Missing trace, metric or log receipt")
+    summary = {"checked_at": datetime.now(timezone.utc).isoformat(), "profiles": str(profiles),
+               "authenticated": result["authenticated"], "skills_discovered": len(result["skills"]),
+               "revision": revision, "run_id": probe_id, "host": result["host"]}
+    if "execution_gate" in result:
+        summary.update(execution_gate=result["execution_gate"], installed_skills=result["installed_skills"])
+    latest = root / "probes" / "latest"
+    latest.mkdir(exist_ok=True)
+    staging = latest / (probe_id + ".tmp")
+    try:
+        staging.write_bytes(runner.json_bytes(summary))
+        staging.replace(latest / (line + ".json"))
+    finally:
+        staging.unlink(missing_ok=True)
     return {**result,"artifact":str(location/"discovery.json")}
 
 
@@ -138,9 +148,19 @@ def main(argv=None):
                                     "session": t["native_session"], "run": t["active_run"], "pr": t["pr"]}
                                    for t in tasks if t["owner"] == line] for line in LINES},
                   "decisions": gates}
+        checks = {}
+        for line in LINES:
+            path = root / "probes" / "latest" / (line + ".json")
+            if path.is_file():
+                check = json.loads(path.read_bytes())
+                if Path(check.pop("profiles")) == profiles and check.get("host") in {"codex","cursor"}:
+                    checks[line] = check
+        result["last_host_checks"] = checks
         heartbeat = root / "dispatcher-status.json"
         if heartbeat.is_file():
             result["last_dispatcher_heartbeat"] = json.loads(heartbeat.read_bytes())
+        native = root / "symphony-admission.json"
+        result["last_symphony_admission"] = json.loads(native.read_bytes()) if native.is_file() else None
     elif action == "request-turn":
         store.request_turn(args.task, args.reason)
         result = store.get(args.task)
@@ -152,12 +172,15 @@ def main(argv=None):
     elif action == "login":
         _, home, plugin = runner.profile(args.line, profiles)
         rt = runner.host(args.line, home, root, plugin, read_only=True)
-        flags = ["login", "--device-auth"] if args.line == "sylan" else ["auth", "login"]
-        return subprocess.run(rt.command + flags, cwd=root, env=rt.env).returncode
+        return subprocess.run(rt.command + ["login", "--device-auth"], cwd=root, env=rt.env).returncode
     elif action == "sync-skills":
-        from .native_skills import sync
-        current=sync(args.line,profiles/args.line)
-        result={"line":args.line,"revision":current.revision,"skills":len(current.skills)}
+        if args.line == "lauren":
+            from .lauren_native import sync
+            result = sync(profiles / args.line)
+        else:
+            from .native_skills import sync
+            current=sync(args.line,profiles/args.line)
+            result={"line":args.line,"revision":current.revision,"skills":len(current.skills)}
     elif action == "claim":
         result=runner.claim(store,args.task,args.line,args.repo,args.base,root,profiles)
     elif action == "choose":

@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -21,6 +22,17 @@ MODEL = "gpt-6.2-astra"
 EFFORT = "ultra"
 SLOTS = {"investigate": "read_only_investigation_slots", "implement": "implementation_slots"}
 NAMES = dict(zip(("Sylan", "Matt Pocock", "Lauren Tan", "Addy Osmani"), LINES))
+
+
+NATIVE_HOSTS = {"sylan": "codex", "matt": "codex", "lauren": "cursor", "addy": "codex"}
+
+
+def eligible_model(seed, line, model):
+    # dispatch also consumes this module, so import its shared model guard at call time.
+    from .dispatch import requested_model_allowed
+    if line == "lauren" or not requested_model_allowed(model):
+        return False
+    return not seed.get("native_only") or model == seed["requested"][line]["model"]
 
 
 def digest(data):
@@ -52,7 +64,7 @@ def number(value, minimum=0):
 def read_seed(path):
     data = path.read_bytes()
     p = decode(data.decode("utf-8-sig"))
-    if p.get("schema_version") != "1.0" or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", p["plan_id"]):
+    if p.get("schema_version") not in ("1.0", "1.1") or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", p["plan_id"]):
         raise ValueError("Unsupported plan schema or plan ID")
     intended = p["planner"]["requested"]
     if (intended["model"], intended["reasoning_effort"]) != (MODEL, EFFORT):
@@ -62,6 +74,10 @@ def read_seed(path):
     after_headroom = number(p["capacity"].get("after_headroom", {}).get("implementation_slots", 0))
     if max(*slots.values(), after_headroom) > 1:
         raise ValueError("The single-slot dispatcher supports at most one slot")
+    native_only = p["schema_version"] == "1.1"
+    if native_only and (slots["implement"] or after_headroom or number(resources["heavy_build_slots"])
+                        or number(resources["gpu_or_paid_benchmark_calls"])):
+        raise ValueError("This native pilot admits read-only investigation only")
     candidates = {}
     for item in p["candidates"]:
         key = item["linear_id"]
@@ -77,6 +93,10 @@ def read_seed(path):
             model, effort = request["model_request"], request["effort_request"]
             if not all(isinstance(s, str) and re.fullmatch(r"[a-zA-Z0-9_.:-]{1,128}", s) for s in (model, effort)):
                 raise ValueError("Invalid initial model or effort")
+            if native_only:
+                from .dispatch import requested_model_allowed
+                if request.get("host") != NATIVE_HOSTS[line] or not requested_model_allowed(model):
+                    raise ValueError("Native seed requires an explicit permitted host and model")
             requests[line] = {"model": model, "effort": effort}
     if set(requests) != set(LINES):
         raise ValueError("Missing line resource requests")
@@ -85,9 +105,9 @@ def read_seed(path):
               "implement": budget["one_implementation_attempt_after_admission"]}
     ceilings = {"investigate": [number(limits["investigate"]["wall_minutes"], 1),
                                 number(limits["investigate"]["generated_tokens_review_at"], 1)],
-                "implement": [number(limits["implement"]["wall_minutes_review_at"], 1),
-                              number(limits["implement"]["cumulative_generated_tokens_including_native_delegates_review_at"], 1)]}
-    return {"plan_id": p["plan_id"], "seed_sha256": digest(data), "slots": slots,
+                "implement": [number(limits["implement"]["wall_minutes_review_at"], 0 if native_only else 1),
+                              number(limits["implement"]["cumulative_generated_tokens_including_native_delegates_review_at"], 0 if native_only else 1)]}
+    return {**({"native_only": True} if native_only else {}), "plan_id": p["plan_id"], "seed_sha256": digest(data), "slots": slots,
             "candidates": candidates, "requested": requests, "review_limits": ceilings,
             "implementation_slots_after_headroom": after_headroom}
 
@@ -118,29 +138,46 @@ def coordinator(root, seed):
 
 def probe_lines(root, profiles=None):
     """Use the newest doctor discovery per line, then ask its pinned native host."""
+    root = Path(root)
+    profiles = (Path(profiles) if profiles is not None else root / "profiles").resolve()
     latest = {}
     for path in sorted((root / "probes").glob("*/discovery.json"),
                        key=lambda p: (p.stat().st_mtime_ns, str(p))):
         raw = path.read_bytes()
         obs = decode(raw)
-        if obs["line"] in LINES:
-            latest[obs["line"]] = (obs, digest(raw), path.parent)
+        line = obs.get("line")
+        if line not in NATIVE_HOSTS or obs.get("host") != NATIVE_HOSTS[line]:
+            continue
+        if obs.get("profiles") and Path(obs["profiles"]).resolve() != profiles:
+            continue
+        latest[line] = (obs, digest(raw), path.parent)
     result = {line: {"authenticated": None, "models": {}} for line in LINES}
+    # The installed Cursor bundle does not yet prove child-agent model enforcement.
+    result["lauren"]["probe_status"] = "cursor_delegated_model_policy_unverified"
     for line, (obs, sha, cwd) in latest.items():
+        if line == "lauren":
+            continue
         revision = obs["revision"]
         length = 64 if line == "sylan" else 40
         if not isinstance(revision, str) or not re.fullmatch("[0-9a-f]{%d}" % length, revision):
             raise ValueError("Invalid profile revision")
         cap = result[line]
-        cap.update(revision=revision, discovery_sha256=sha)
+        cap.update(host=NATIVE_HOSTS[line], revision=revision, discovery_sha256=sha)
         try:
-            _, home, plugin = runner.profile(line, Path(profiles) if profiles else root / "profiles",
-                                             pinned=revision)
+            _, home, plugin = runner.profile(line, profiles, pinned=revision)
             with runner.host(line, home, cwd, plugin, read_only=True) as rt:
                 live = rt.capabilities()
-                combinations = live.get("models", {}) if line == "sylan" else rt.discover().get("model_efforts", {})
-            cap.update(authenticated=live.get("authenticated"), models=combinations)
-        except (OSError, ValueError, RuntimeError, TimeoutError):
+                cap["authenticated"] = live.get("authenticated")
+                combinations = live.get("models")
+                # A bare model name or an effort string does not establish any pair.
+                if isinstance(combinations, dict):
+                    cap["models"] = {
+                        model: levels for model, levels in combinations.items()
+                        if isinstance(model, str) and model.strip()
+                        and isinstance(levels, list) and levels
+                        and all(isinstance(level, str) and level.strip() for level in levels)
+                    }
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
             cap["probe_status"] = "unavailable"
     return result
 
@@ -181,6 +218,8 @@ def validate(decision, context):
     line, mode = decision["line"], decision["mode"]
     if line not in LINES or mode not in SLOTS:
         raise ValueError("Unknown line or execution mode")
+    if not eligible_model(context["seed"], line, decision["model"]):
+        raise ValueError("Model or production line is ineligible for this pilot")
     cap = context["lines"][line]
     if (cap["authenticated"] is not True or not cap.get("revision")
             or decision["profile_revision"] != cap["revision"]
@@ -224,6 +263,8 @@ def dispatch_resources(plan_path, line, *, read_only=True, root=None):
               "tokens": tokens if seed["slots"][mode] else 0, "slots": seed["slots"][mode], **seed["requested"][line],
               "revision": 0, "profile_revision": None, "sha256": seed["seed_sha256"]}
     if not revisions:
+        if not eligible_model(seed, line, result["model"]):
+            result.update(slots=0, minutes=0, tokens=0)
         return result
     revision = max(revisions)
     receipt_hash = history(directory, seed["plan_id"], revision)
@@ -273,6 +314,8 @@ def model_view(ctx):
         if cap.get("authenticated") is not True or not cap.get("revision"):
             continue
         for model, efforts in sorted(cap.get("models", {}).items()):
+            if not eligible_model(seed, line, model):
+                continue
             for effort in sorted(set(efforts)):
                 choice = len(routes)
                 routes.append({"line": line, "model": model, "effort": effort,

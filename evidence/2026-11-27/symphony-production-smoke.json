@@ -1,0 +1,1 @@
+{"credentials":0,"production_bootstrap":"passed","native_worker_slot":"released","tracker":"memory","external_worker":"disposable Python fixture","real_python_worker":["eligible:false","waiting_human"],"cooperative_owner_cancellation":"passed","windows_forced_child_tree_cancellation":"passed"}

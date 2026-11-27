@@ -26,3 +26,11 @@ Accepted 2026-11-27. These are design decisions, not evidence of implementation.
 | 020 | Vertical slice first |
 
 No common mandatory engineering chain or extra quality gate. Shared infrastructure must not override native behavior. Missing telemetry is unknown, not evidence of compliance.
+
+### ADR 014 implementation choice, 2026-11-27
+
+Maintain a narrow downstream worker extension for the factory's Symphony instance. Symphony retains Linear reconciliation, supervision, cancellation and slot ownership. A production line selects its issue through admission. The worker starts or resumes the native session bound to the SQLite claim. An idle line can wait for a person or an upstream PR without holding an execution slot. The existing Symphony installation supplies the baseline. Its regular Codex runner remains the default in other instances. [Isolated Orchestrator experiment](evidence/2026-11-27/symphony-worker-smoke.json)
+
+### ADR 011 native hosts and model selection, 2026-11-27
+
+Ning excluded Claude from factory execution, superseding the earlier shared-login choice. Sylan, Matt and Addy use separate Codex profiles and have priority for the pilots. Matt and Addy use the upstream authors' Codex marketplace packages. Lauren keeps the canonical Cursor pstack plugin and stays out of automatic claims pending verification of a provider policy covering delegated models as well as the lead agent. Existing account settings belong to the operator.

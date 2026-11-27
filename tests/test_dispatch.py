@@ -1,11 +1,13 @@
+import json
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from factory import dispatch
+from factory.runtime import RuntimeUnavailable
 from factory.state import Conflict, LINES, Store
 
 
@@ -29,6 +31,55 @@ class DispatchTests(unittest.TestCase):
             choose.assert_not_called()
             github.assert_not_called()
             self.assertIsNone(self.store.get(self.uid)["owner"])
+
+    def test_locked_worker_still_receives_maintenance_and_status(self):
+        sources = self.root / "sources.json"
+        sources.write_text("{}")
+        receipt = self.root / "status.json"
+        with dispatch.admission(self.store.path.with_suffix(".dispatch.lock")), \
+                patch.object(dispatch, "linear_scope", return_value=(set(), "test_scope")), \
+                patch("factory.maintenance.maintain", return_value={"github":"checked"}) as maintain, \
+                patch.object(dispatch.runner, "choose") as scout:
+            result = dispatch.main(["--root", str(self.root), "--sources", str(sources),
+                                    "--maintain", "--receipt", str(receipt)])
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(receipt.read_bytes())["result"],
+                         {"state":"occupied", "maintenance":{"github":"checked"}, "intake":"test_scope"})
+        maintain.assert_called_once()
+        scout.assert_not_called()
+
+    def test_unavailable_line_identity_does_not_block_other_hosts(self):
+        good = MagicMock()
+        good.__enter__.return_value.capabilities.return_value = {"authenticated":True,"models":{"example":["medium"]}}
+        policy = {**self.policy, "profile_revision":None}
+        with patch.object(dispatch, "dispatch_resources", return_value=policy), \
+                patch.object(dispatch.runner, "profile", return_value=("pin", self.root, None)), \
+                patch.object(dispatch.runner, "host", side_effect=[RuntimeUnavailable("missing identity"), good, good, good]), \
+                patch("factory.eligibility.read_candidate", return_value={"blocked":False,"revision":"v1","context":{}}), \
+                patch.object(dispatch.runner, "choose", return_value=None) as choose:
+            result = self.tick()
+        self.assertEqual(result["lines"]["sylan"], "native_host_unavailable")
+        self.assertEqual([call.args[1] for call in choose.call_args_list], ["matt","lauren","addy"])
+
+    def test_legacy_and_automatic_model_requests_never_open_a_host(self):
+        with patch.object(dispatch.runner, "profile") as profile:
+            for name in ("sonnet", "claude-sonnet-4-6", "anthropic/claude", "opus[1m]", "fable",
+                         "Fable-5", "auto", "default"):
+                with self.subTest(model=name), patch.object(dispatch, "dispatch_resources",
+                                                            return_value={**self.policy, "model":name}):
+                    _, why = dispatch.route_available(self.root, self.root, self.root / "plan", "addy", True)
+                    self.assertEqual(why, "model_replan_required")
+            profile.assert_not_called()
+
+    def test_route_requires_the_runtime_to_advertise_model_and_effort(self):
+        caps = MagicMock()
+        with patch.object(dispatch, "dispatch_resources", return_value={**self.policy, "profile_revision":None}), \
+                patch.object(dispatch.runner, "profile", return_value=("pin", self.root, {})), \
+                patch.object(dispatch.runner, "host", return_value=caps):
+            for models in (None, {}, {"example":None}, {"example":["low"]}):
+                caps.__enter__.return_value.capabilities.return_value = {"authenticated":True, "models":models}
+                self.assertEqual(dispatch.route_available(self.root, self.root, self.root / "plan", "addy", True)[1],
+                                 "model_replan_required")
 
     def test_claim_requires_unchanged_live_upstream_evidence(self):
         snapshots = [{"blocked": False, "revision": "first", "context": {}},
