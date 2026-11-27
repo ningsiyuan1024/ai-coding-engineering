@@ -1,5 +1,42 @@
 # AI Coding Workflow → AI Software Factory
 
+## Software Factory Architecture
+
+```mermaid
+flowchart TD
+    H[Human] --> P[Linear · Shared Issue Pool]
+    I[Issue Scout] --> P
+    D[Production Lines · Discovery] --> P
+    P --> O[Symphony · Always-on Orchestrator]
+    O <--> M[Model Planner · Astra Ultra]
+    O --> S
+    O --> T
+    O --> L
+    O --> A
+    subgraph Lines["Four Independent Production Lines"]
+      direction LR
+      S["Sylan<br/>Isolated Profile<br/>Native Skills · Worktree · Session<br/>Subagents · HITL · Verification<br/>PR Lifecycle"]
+      T["Matt Pocock<br/>Isolated Profile<br/>Native Skills · Worktree · Session<br/>Subagents · HITL · Verification<br/>PR Lifecycle"]
+      L["Lauren Tan<br/>Isolated Profile<br/>Native Skills · Worktree · Session<br/>Subagents · HITL · Verification<br/>PR Lifecycle"]
+      A["Addy Osmani<br/>Isolated Profile<br/>Native Skills · Worktree · Session<br/>Subagents · HITL · Verification<br/>PR Lifecycle"]
+    end
+    S -.-> X[OpenTelemetry · Traces / Metrics / Logs / Artifacts]
+    T -.-> X
+    L -.-> X
+    A -.-> X
+    X --> E[Experience Store]
+    E --> V["Sylan Self-Evolution<br/>Observe → Hypothesize → Experiment → Evaluate → Promote"]
+    V --> S
+    classDef sylan fill:#64748b,stroke:#475569,color:#fff
+    classDef matt fill:#2563eb,stroke:#1d4ed8,color:#fff
+    classDef lauren fill:#9333ea,stroke:#7e22ce,color:#fff
+    classDef addy fill:#15803d,stroke:#166534,color:#fff
+    class S sylan
+    class T matt
+    class L lauren
+    class A addy
+```
+
 ## 四条独立生产线
 
 我希望通过真实开源贡献，研究不同 AI Coding 工程体系如何影响交付质量、效率与成本，并逐步演进自己的软件工厂。
