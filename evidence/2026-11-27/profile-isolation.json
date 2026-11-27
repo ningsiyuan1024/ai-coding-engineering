@@ -1,0 +1,124 @@
+{
+  "host": "Claude Code 2.1.109 (Windows)",
+  "transport": "stdio stream-json",
+  "requests": [
+    "initialize",
+    "get_context_usage"
+  ],
+  "user_turns": 0,
+  "date": "2026-11-27",
+  "profile_options": [
+    "dedicated CLAUDE_CONFIG_DIR, HOME and USERPROFILE",
+    "one session-scoped --plugin-dir",
+    "--setting-sources user"
+  ],
+  "fixture": "Local repository with root and .claude/CLAUDE.md, .claude/rules, one skill, one agent, and a project-scoped local marketplace plugin. Every test home had a copy of that plugin cache. Simulated global profile also contained a user skill, agent, CLAUDE.md and rule.",
+  "actual_global_skill_names_compared": 3,
+  "line_results": [
+    {
+      "line": "matt",
+      "commit": "6f7f7831a625f040a8e06a0e7954826b87ce775a",
+      "worktrees": [
+        "fixture",
+        "clean"
+      ],
+      "native_skills_found": [
+        27,
+        27
+      ],
+      "author_agents": [],
+      "fixture_skill_agent_and_plugin_agents_detected": false,
+      "fixture_memory_in_context": false,
+      "fixture_file_read_observed": false,
+      "matched_global_skill_names": 0
+    },
+    {
+      "line": "lauren",
+      "commit": "b7b93c36be9bcc36a74db438e0fd385d660bc559",
+      "worktrees": [
+        "fixture",
+        "clean"
+      ],
+      "native_skills_found": [
+        59,
+        59
+      ],
+      "author_agents": [
+        "pstack:comment-sicko",
+        "pstack:poteto-agent"
+      ],
+      "fixture_skill_agent_and_plugin_agents_detected": false,
+      "fixture_memory_in_context": false,
+      "fixture_file_read_observed": false,
+      "matched_global_skill_names": 0
+    },
+    {
+      "line": "addy",
+      "commit": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+      "worktrees": [
+        "fixture",
+        "clean"
+      ],
+      "native_skills_found": [
+        26,
+        26
+      ],
+      "author_agents": [
+        "agent-skills:accessibility-auditor",
+        "agent-skills:code-reviewer",
+        "agent-skills:security-auditor",
+        "agent-skills:test-engineer",
+        "agent-skills:web-performance-auditor"
+      ],
+      "fixture_skill_agent_and_plugin_agents_detected": false,
+      "fixture_memory_in_context": false,
+      "fixture_file_read_observed": false,
+      "matched_global_skill_names": 0
+    }
+  ],
+  "controls": [
+    {
+      "scope": "user,project,local",
+      "simulated_global_home": true,
+      "cli_agent_injected": true,
+      "marker_skills": [
+        "audit-global-skill",
+        "audit-project-skill"
+      ],
+      "marker_agents": [
+        "audit-explicit-agent",
+        "audit-global-agent",
+        "audit-project-agent",
+        "audit-side:audit-side-agent"
+      ],
+      "memory_files": [
+        "global/CLAUDE.md",
+        "global/rules/audit-global.md",
+        "repo/.claude/CLAUDE.md",
+        "repo/.claude/rules/audit-project.md",
+        "repo/CLAUDE.md"
+      ]
+    },
+    {
+      "scope": "user",
+      "simulated_global_home": true,
+      "cli_agent_injected": false,
+      "marker_skills": [
+        "audit-global-skill"
+      ],
+      "marker_agents": [
+        "audit-global-agent"
+      ],
+      "memory_files": [
+        "global/CLAUDE.md",
+        "global/rules/audit-global.md"
+      ]
+    }
+  ],
+  "limits": [
+    "SDK command and agent catalog discovery; no model invocation, skill execution, or subagent dispatch.",
+    "Memory evidence measures the host context in this fixture. Worktree files remain readable to authorized tools.",
+    "Using the user settings source suppresses automatic project CLAUDE.md loading, including legitimate contribution guidance.",
+    "Settings under the line's own user profile are effective. Managed host policies and project files at untested paths are outside the fixture."
+  ]
+}

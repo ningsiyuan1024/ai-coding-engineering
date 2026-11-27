@@ -1,0 +1,88 @@
+--- a/lib/symphony_elixir/orchestrator.ex
++++ b/lib/symphony_elixir/orchestrator.ex
+@@ -34,6 +34,7 @@
+       :tick_timer_ref,
+       :tick_token,
+       task_supervisor: SymphonyElixir.TaskSupervisor,
++      worker_module: SymphonyElixir.AgentRunner,
+       running: %{},
+       completed: MapSet.new(),
+       claimed: MapSet.new(),
+@@ -65,6 +66,7 @@
+           tick_timer_ref: nil,
+           tick_token: nil,
+           task_supervisor: Keyword.get(opts, :task_supervisor, SymphonyElixir.TaskSupervisor),
++          worker_module: Keyword.get(opts, :worker_module, AgentRunner),
+           codex_totals: @empty_codex_totals,
+           codex_rate_limits: nil
+         }
+@@ -203,6 +205,11 @@
+   def handle_info(msg, state) do
+     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
+     {:noreply, state}
++  end
++
++  defp handle_agent_down({:shutdown, {:worker_deferred, disposition}}, state, issue_id, _running_entry, _session_id) do
++    Logger.info("Worker released its execution slot for issue_id=#{issue_id} disposition=#{disposition}")
++    release_issue_claim(state, issue_id)
+   end
+ 
+   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
+@@ -940,19 +947,29 @@
+   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+     recipient = self()
+ 
+-    case select_worker_host(state, preferred_worker_host) do
+-      :no_worker_capacity ->
+-        Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
+-        state
+-
+-      worker_host ->
+-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
++    if state.worker_module == AgentRunner or state.worker_module.eligible?(issue) do
++      case select_worker_host(state, preferred_worker_host) do
++        :no_worker_capacity ->
++          Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
++          state
++
++        worker_host ->
++          spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
++      end
++    else
++      release_issue_claim(state, issue.id)
+     end
+   end
+ 
+   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+     case Task.Supervisor.start_child(state.task_supervisor, fn ->
+-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
++           case state.worker_module.run(issue, recipient, attempt: attempt, worker_host: worker_host) do
++             {:defer, disposition} when disposition in [:waiting_human, :waiting_upstream, :idle] ->
++               exit({:shutdown, {:worker_deferred, disposition}})
++
++             result ->
++               result
++           end
+          end) do
+       {:ok, pid} ->
+         ref = Process.monitor(pid)
+--- a/lib/symphony_elixir/agent_runtime_supervisor.ex
++++ b/lib/symphony_elixir/agent_runtime_supervisor.ex
+@@ -18,13 +18,16 @@
+ 
+     orchestrator_name = Keyword.get(opts, :orchestrator_name, SymphonyElixir.Orchestrator)
+ 
++    orchestrator_opts =
++      Keyword.take(opts, [:worker_module]) ++ [name: orchestrator_name, task_supervisor: task_supervisor_name]
++
+     children = [
+       Supervisor.child_spec(
+         {Task.Supervisor, name: task_supervisor_name},
+         id: task_supervisor_name
+       ),
+       Supervisor.child_spec(
+-        {SymphonyElixir.Orchestrator, name: orchestrator_name, task_supervisor: task_supervisor_name},
++        {SymphonyElixir.Orchestrator, orchestrator_opts},
+         id: orchestrator_name
+       )
+     ]

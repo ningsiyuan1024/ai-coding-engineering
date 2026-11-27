@@ -1,0 +1,29 @@
+{
+  "experiment": "sylan-pr-triage-current-review-threads",
+  "active_revision": "sylan-pr-triage-v1",
+  "candidate_revision": "sylan-pr-triage-v2",
+  "candidate_status": "rejected",
+  "hypothesis": "Adding a current-head unresolved review-thread signal to conflict and formal change-request signals catches more PRs requiring owner action without creating additional false alerts or reducing coverage.",
+  "baseline_definition": "Reconstructed comparison rule: flag conflicts and formal change requests. This rule is not a claim about a deployed Sylan version.",
+  "candidate_definition": "Keep baseline action signals and also flag any current unresolved thread from a complete thread read. Abstain when thread coverage is missing and neither baseline action signal is present.",
+  "promotion_criterion": "More true positives, no increase in false positives, and no increase in abstentions among labeled records. Passing makes a version eligible for review.",
+  "snapshot": {
+    "path_relative_to_daily_oss": "2026-11-27/pr-heartbeat.json",
+    "checked_at": "2026-11-27T01:04:17Z",
+    "sha256": "aa33c0d699063d953d266b94b65bee07271f7c02f8205da77980beeb516ab3a3"
+  },
+  "scope": "Every open, non-draft PR in the snapshot. Score against the historical routing stage in the same snapshot. This is a retrospective experiment without a held-out cohort.",
+  "evidence": [
+    {
+      "path_relative_to_daily_oss": "2026-11-27/ailoy-634-review.md",
+      "sha256": "fd8ab6a165acf5709eec0463eca578229ab72f5f87cd7da7066222f01b9e06df",
+      "role": "Motivating follow-up only. The reviewer suggested a non-blocking test improvement. The local report documents 28 passing tests and faster failure in a control that omits iterator return. The policy does not consume these later results."
+    },
+    {
+      "path_relative_to_daily_oss": "2026-11-27/agentrun-3879-verification.md",
+      "sha256": "d49ef1eafab4be273d34dcdb1ba13a23aca984b700aaf01b3312c987e998e93c",
+      "role": "Cross-check only. The local merge-tree verification records a real runner conflict at the observed PR head. The candidate tree had function-level checks and no project integration regression run."
+    }
+  ],
+  "limitations": "Historical routing stage measures immediate author-side action. It is a proxy derived from the same check, can share inputs with the rules, and does not label defect severity, review helpfulness, or work avoided. Optional review feedback can be technically valuable. No prospective performance or production effect was measured."
+}

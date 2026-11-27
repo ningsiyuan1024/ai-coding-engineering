@@ -1,0 +1,17 @@
+{
+  "native_orchestrator": true,
+  "tracker": "memory",
+  "native_by_id_refreshes": 3,
+  "max_active_tasks_observed": 1,
+  "monitored_handoffs": [
+    "waiting_human",
+    "waiting_upstream",
+    "ready_to_resume"
+  ],
+  "resumed_original_owner": "sylan",
+  "model_invocations": 0,
+  "baseline_sha256": {
+    "orchestrator.ex": "ffa6fd2ca66f775b93ca561adb60a61a416f8fb604ff247128d3638169fdab22",
+    "agent_runtime_supervisor.ex": "600ac1bd04126f671e77992284ce0083acf9b0130a8a200c7f6751a665042c6a"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "experiment": "sylan-pr-triage-current-review-threads",
+  "metrics": {
+    "sylan-pr-triage-v1": {
+      "tp": 3,
+      "fp": 0,
+      "tn": 10,
+      "fn": 0,
+      "abstained": 0,
+      "unlabeled": 0,
+      "precision": 1.0,
+      "recall_on_classified": 1.0,
+      "coverage_on_labeled": 1.0
+    },
+    "sylan-pr-triage-v2": {
+      "tp": 3,
+      "fp": 4,
+      "tn": 6,
+      "fn": 0,
+      "abstained": 0,
+      "unlabeled": 0,
+      "precision": 0.42857142857142855,
+      "recall_on_classified": 1.0,
+      "coverage_on_labeled": 1.0
+    }
+  },
+  "decision": "reject",
+  "active_revision": "sylan-pr-triage-v1",
+  "rollback": {
+    "trial": "sylan-pr-triage-v2",
+    "restored": "sylan-pr-triage-v1",
+    "changed_decisions_during_trial": 4,
+    "exact_decisions_restored": true,
+    "project_version_file_unchanged": true
+  }
+}

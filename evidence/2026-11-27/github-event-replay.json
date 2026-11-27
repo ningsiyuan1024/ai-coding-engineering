@@ -1,0 +1,28 @@
+{
+  "scope": "Read-only upstream verification with two independent scheduler caches and one isolated local event store.",
+  "pr": "https://github.com/harbor-framework/harbor/pull/4468",
+  "polls": [
+    {
+      "poll": {
+        "state": "ok",
+        "checked": 1,
+        "errors": 0,
+        "events_observed": 1,
+        "next_due": 1795749327
+      },
+      "persisted_merge_events": 1
+    },
+    {
+      "poll": {
+        "state": "ok",
+        "checked": 1,
+        "errors": 0,
+        "events_observed": 1,
+        "next_due": 1795749330
+      },
+      "persisted_merge_events": 1
+    }
+  ],
+  "final_state": "closed",
+  "pin": "6f7f7831a625f040a8e06a0e7954826b87ce775a"
+}

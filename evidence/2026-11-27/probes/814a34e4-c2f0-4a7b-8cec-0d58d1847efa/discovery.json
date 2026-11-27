@@ -1,0 +1,20 @@
+{
+  "line": "sylan",
+  "revision": "92624d5dbdc311bfa39636948c4d9fbd2a1824a2786443ae096a1f3fea27cea7",
+  "native_skill_invocations": null,
+  "model_usage": null,
+  "cost": null,
+  "run_id": "814a34e4-c2f0-4a7b-8cec-0d58d1847efa",
+  "trace_id": "b24dd5b7ce1a7f924f4bf1383f970b4d",
+  "authenticated": false,
+  "host": "codex",
+  "skills": [
+    "create-statusline",
+    "imagegen",
+    "openai-docs",
+    "review-agent",
+    "skill-creator",
+    "skill-installer"
+  ],
+  "astra_ultra_advertised": true
+}

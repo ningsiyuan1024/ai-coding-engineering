@@ -1,0 +1,50 @@
+[
+  {
+    "line": "addy",
+    "revision": "e997ac5b9a74eab332d5e9793bb38a38c8cfdd74",
+    "host": "claude",
+    "authenticated": false,
+    "catalog_size": 26,
+    "trace_id": "bc8b8c994d6cea1669477813e275ce88",
+    "spans": 1,
+    "metrics": 1,
+    "logs": 1,
+    "native_skill_invocations": null
+  },
+  {
+    "line": "lauren",
+    "revision": "b7b93c36be9bcc36a74db438e0fd385d660bc559",
+    "host": "claude",
+    "authenticated": false,
+    "catalog_size": 59,
+    "trace_id": "def1dcd3e82e4ad6aedff59c80620b14",
+    "spans": 1,
+    "metrics": 1,
+    "logs": 1,
+    "native_skill_invocations": null
+  },
+  {
+    "line": "matt",
+    "revision": "6f7f7831a625f040a8e06a0e7954826b87ce775a",
+    "host": "claude",
+    "authenticated": false,
+    "catalog_size": 27,
+    "trace_id": "67f77b85f78b8513d9da444861cb8411",
+    "spans": 1,
+    "metrics": 1,
+    "logs": 1,
+    "native_skill_invocations": null
+  },
+  {
+    "line": "sylan",
+    "revision": "92624d5dbdc311bfa39636948c4d9fbd2a1824a2786443ae096a1f3fea27cea7",
+    "host": "codex",
+    "authenticated": false,
+    "catalog_size": 6,
+    "trace_id": "b24dd5b7ce1a7f924f4bf1383f970b4d",
+    "spans": 1,
+    "metrics": 1,
+    "logs": 1,
+    "native_skill_invocations": null
+  }
+]
