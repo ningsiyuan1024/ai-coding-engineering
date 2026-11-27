@@ -1,12 +1,19 @@
 # AI Coding Workflow → AI Software Factory
 
-## 我的工作流
+## 四条独立生产线
 
-| 工作流 | 任务入口 | 实践案例 |
+我希望通过真实开源贡献，研究不同 AI Coding 工程体系如何影响交付质量、效率与成本，并逐步演进自己的软件工厂。
+
+| 生产线 | 工程体系 | 实践案例 |
 | --- | --- | --- |
-| [Sylan · Engineering Workflow](workflows/sylan.md) | 用一张工单跟踪实现、审查和返工 | — |
-| [Lauren Tan · pstack](workflows/pstack.md) | 将任务交给 `poteto-mode`，由它选择调查、修复或开发流程 | — |
-| [Matt Pocock · skills](workflows/matt.md) | 从一张任务单开始实现，也可以从一份已有的改动开始审查 | [Harbor #4219 · Claude Code 用量统计](cases/harbor-4219.md) |
+| [Sylan](workflows/sylan.md) | 自有 Engineering Workflow · Symphony | — |
+| [Matt Pocock](workflows/matt.md) | 原生 skills | [Harbor #4219 · Claude Code 用量统计](cases/harbor-4219.md) |
+| [Lauren Tan](workflows/pstack.md) | 原生 pstack · Skills / Playbooks / Principles | — |
+| [Addy Osmani](workflows/addy.md) | 原生 Agent Skills | — |
+
+四条生产线独立运行，共享任务池、基础设施及观测评测标准。每条生产线的主 Agent 自主选择本体系的 Skills，不预设固定 Skill Chain，也不默认混用其他体系。记录实际 Skill 调用、工程产物、验证结果、人工介入、成本与 PR 结果，事后评估路由和交付质量。
+
+当前为设计约定，尚未完成运行时接入；任务分配机制、模型预算和验收细则待决策。
 
 ## 文章精选
 
